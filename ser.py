@@ -3,6 +3,7 @@ import json
 import string
 from io import BytesIO
 from difflib import get_close_matches
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,28 +26,17 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 
 
 # ======================
-# SERVER SETUP
-# ======================
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ======================
-# GLOBAL CLIENTS (يتم إنشاؤهم عند startup)
+# GLOBAL CLIENTS
 # ======================
 client = None
 tts_client = None
 
 
-@app.on_event("startup")
-def startup_event():
+# ======================
+# LIFESPAN (Startup / Shutdown)
+# ======================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global client, tts_client
 
     if not GOOGLE_API_KEY:
@@ -59,6 +49,22 @@ def startup_event():
     tts_client = ElevenLabs(api_key=ELEVEN_API_KEY)
 
     print("✅ Application started successfully")
+    yield
+    print("🛑 Application shutdown")
+
+
+# ======================
+# SERVER SETUP
+# ======================
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ======================
@@ -125,10 +131,10 @@ def violates_rules(text):
 
 
 # ======================
-# AUDIO HELPERS (آمنة بدون ffmpeg)
+# AUDIO HELPERS (SAFE)
 # ======================
 def is_valid_audio(audio_bytes: bytes):
-    # مؤقتًا: نقبل أي صوت عشان Railway
+    # مؤقتًا نقبل أي صوت (Railway-safe)
     return True
 
 
@@ -152,7 +158,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
             content={"error": "invalid_audio", "message": "الصوت غير صالح"}
         )
 
-    # ===== Speech To Text (Gemini) =====
+    # ===== Speech To Text =====
     audio_part = types.Part.from_bytes(
         data=audio_bytes,
         mime_type="audio/wav"
@@ -166,7 +172,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
     user_text = stt_response.text
     clean_question = normalize(user_text)
 
-    # ===== Cache Check =====
+    # ===== Cache =====
     best_match = find_best_match(clean_question, list(cache.keys()))
     if best_match:
         audio_file = os.path.basename(cache[best_match]["audio_file"])
@@ -199,7 +205,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
     memory.append(f"User: {user_text}\nRamses: {reply_text}")
     save_memory()
 
-    # ===== Text To Speech (ElevenLabs) =====
+    # ===== Text To Speech =====
     voice_id = "JBFqnCBsd6RMkjVDRZzb"
     audio_stream = tts_client.text_to_speech.convert(
         text=reply_text,
