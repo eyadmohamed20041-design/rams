@@ -199,7 +199,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 """
 
         completion = llm_client.chat.completions.create(
-            model="llama3-8b-8192",  # ✅ أخف وأأمن
+            model = "llama-3.1-8b-instant",  # ✅ أخف وأأمن
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
@@ -270,3 +270,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
+
