@@ -1,6 +1,6 @@
 fastapi
 uvicorn
 pydub
-google-generativeai
+google-genai
 elevenlabs
 python-multipart
