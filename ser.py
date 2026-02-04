@@ -16,8 +16,9 @@ from elevenlabs import ElevenLabs
 # Gemini AI (Google) Imports
 # ======================
 # تم تعديل الاستدعاء حسب آخر نسخة من مكتبة google-genai
-import google_genai as genai
-from google_genai import types
+import google.genai as genai
+from google.genai import types
+
 
 # ======================
 # API KEYS
@@ -174,3 +175,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status":"ok","language":current_language}
+
