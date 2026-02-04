@@ -38,6 +38,18 @@ app.add_middleware(
 )
 
 # ======================
+# Ensure favicon exists
+# ======================
+FAVICON_PATH = "/tmp/favicon.ico"
+if not os.path.exists(FAVICON_PATH):
+    with open(FAVICON_PATH, "wb") as f:
+        f.write(b"")
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse(FAVICON_PATH)
+
+# ======================
 # LANGUAGE SUPPORT
 # ======================
 current_language = "ar"
