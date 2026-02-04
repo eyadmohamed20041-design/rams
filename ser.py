@@ -1,6 +1,7 @@
 import os
 import json
 import string
+import time
 from difflib import get_close_matches
 from contextlib import asynccontextmanager
 
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from elevenlabs import ElevenLabs
 
 # ======================
-# Gemini (STT only)
+# Gemini (STT)
 # ======================
 import google.genai as genai
 from google.genai import types
@@ -27,6 +28,7 @@ from groq import Groq
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+API_SECRET = os.getenv("API_SECRET", "SECRET123")  # 🔐 بسيط للحماية
 
 # ======================
 # GLOBAL CLIENTS
@@ -36,35 +38,36 @@ tts_client = None
 llm_client = None
 
 # ======================
+# RATE LIMIT
+# ======================
+last_request_time = 0
+MIN_INTERVAL = 3  # ثواني بين كل request
+
+# ======================
 # LIFESPAN
 # ======================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt_client, tts_client, llm_client
 
-    try:
-        if not GOOGLE_API_KEY:
-            raise RuntimeError("GOOGLE_API_KEY is missing")
+    if not GOOGLE_API_KEY:
+        raise RuntimeError("GOOGLE_API_KEY missing")
 
-        if not ELEVEN_API_KEY:
-            raise RuntimeError("ELEVEN_API_KEY is missing")
+    if not ELEVEN_API_KEY:
+        raise RuntimeError("ELEVEN_API_KEY missing")
 
-        if not GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is missing")
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY missing")
 
-        stt_client = genai.Client(api_key=GOOGLE_API_KEY)
-        tts_client = ElevenLabs(api_key=ELEVEN_API_KEY)
-        llm_client = Groq(api_key=GROQ_API_KEY)
+    stt_client = genai.Client(api_key=GOOGLE_API_KEY)
+    tts_client = ElevenLabs(api_key=ELEVEN_API_KEY)
+    llm_client = Groq(api_key=GROQ_API_KEY)
 
-        print("✅ Server Started (Groq AI Enabled)")
+    print("✅ Server Started")
 
-        yield
+    yield
 
-        print("🛑 Server Stopped")
-
-    except Exception as e:
-        print("🔥 STARTUP ERROR:", e)
-        raise e
+    print("🛑 Server Stopped")
 
 # ======================
 # SERVER SETUP
@@ -142,8 +145,19 @@ def violates_rules(text):
 # ======================
 @app.post("/ask")
 async def ask(request: Request, file: UploadFile = File(...)):
-    try:
+    global last_request_time
 
+    # 🔐 Secret Header
+    if request.headers.get("x-api-key") != API_SECRET:
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    # ⏱ Rate Limit
+    now = time.time()
+    if now - last_request_time < MIN_INTERVAL:
+        return JSONResponse(status_code=429, content={"error": "Too many requests"})
+    last_request_time = now
+
+    try:
         audio_bytes = await file.read()
 
         # ===== STT =====
@@ -158,6 +172,10 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         user_text = stt_response.text or ""
+
+        if not user_text.strip():
+            return JSONResponse(status_code=400, content={"error": "Empty speech"})
+
         clean_question = normalize(user_text)
 
         # ===== CACHE =====
@@ -169,9 +187,9 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 "audio_url": f"/audio/{audio_file}"
             }
 
-        # ===== GROQ AI =====
+        # ===== LLM =====
         language_name = LANGUAGE_NAMES.get(current_language, "العربية")
-        previous_memory = "\n".join(memory[-10:])
+        previous_memory = "\n".join(memory[-5:])
 
         system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
@@ -181,13 +199,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
 """
 
         completion = llm_client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama3-8b-8192",  # ✅ أخف وأأمن
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
             ],
             temperature=0.6,
-            max_tokens=350
+            max_tokens=300
         )
 
         reply_text = completion.choices[0].message.content
@@ -199,16 +217,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
         save_memory()
 
         # ===== TTS =====
-        voice_id = "JBFqnCBsd6RMkjVDRZzb"
-
         audio_stream = tts_client.text_to_speech.convert(
             text=reply_text,
-            voice_id=voice_id,
+            voice_id="JBFqnCBsd6RMkjVDRZzb",
             model_id="eleven_multilingual_v2"
         )
 
         audio_bytes_full = b"".join(audio_stream)
-
         audio_filename = os.path.join(TMP_DIR, f"reply_{len(cache)+1}.wav")
 
         with open(audio_filename, "wb") as f:
@@ -218,7 +233,6 @@ async def ask(request: Request, file: UploadFile = File(...)):
             "text": reply_text,
             "audio_file": audio_filename
         }
-
         save_cache()
 
         return {
@@ -227,8 +241,16 @@ async def ask(request: Request, file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        print("🔥 ASK ERROR:", e)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        err = str(e)
+        print("🔥 ASK ERROR:", err)
+
+        if "detected_unusual_activity" in err:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "AI provider blocked Free Tier usage"}
+            )
+
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 # ======================
 # AUDIO
