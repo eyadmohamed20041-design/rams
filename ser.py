@@ -4,12 +4,14 @@ import string
 import time
 from difflib import get_close_matches
 from contextlib import asynccontextmanager
+import io
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from elevenlabs import ElevenLabs
+from pydub import AudioSegment
 
 # ======================
 # Gemini (STT)
@@ -64,9 +66,7 @@ async def lifespan(app: FastAPI):
     llm_client = Groq(api_key=GROQ_API_KEY)
 
     print("✅ Server Started")
-
     yield
-
     print("🛑 Server Stopped")
 
 # ======================
@@ -199,7 +199,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 """
 
         completion = llm_client.chat.completions.create(
-            model = "llama-3.1-8b-instant",  # ✅ أخف وأأمن
+            model = "llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
@@ -224,10 +224,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         audio_bytes_full = b"".join(audio_stream)
-        audio_filename = os.path.join(TMP_DIR, f"reply_{len(cache)+1}.wav")
 
-        with open(audio_filename, "wb") as f:
-            f.write(audio_bytes_full)
+        # 🔹 تحويل الصوت إلى PCM 16-bit WAV لضمان توافق Unity
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes_full))
+        audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
+
+        audio_filename = os.path.join(TMP_DIR, f"reply_{len(cache)+1}.wav")
+        audio.export(audio_filename, format="wav")
 
         cache[clean_question] = {
             "text": reply_text,
@@ -270,4 +273,3 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
-
