@@ -7,8 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
 
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from difflib import get_close_matches
 
 from pydub import AudioSegment
@@ -21,7 +20,9 @@ from io import BytesIO
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 
-client = genai.Client(api_key=GOOGLE_API_KEY)
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
+
 tts_client = ElevenLabs(api_key=ELEVEN_API_KEY)
 
 # ======================
@@ -60,26 +61,16 @@ MIN_DURATION_SEC = 2.0
 # ======================
 # LOAD CACHE & MEMORY
 # ======================
+cache = {}
+memory = []
+
 if os.path.exists(RESPONSES_FILE):
     with open(RESPONSES_FILE, "r", encoding="utf-8") as f:
         cache = json.load(f)
-else:
-    cache = {}
-    with open(RESPONSES_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False)
 
 if os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-        try:
-            memory = json.load(f)
-            if not isinstance(memory, list):
-                memory = []
-        except:
-            memory = []
-else:
-    memory = []
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(memory, f, ensure_ascii=False)
+        memory = json.load(f)
 
 # ======================
 # HELPERS
@@ -141,23 +132,15 @@ async def ask(file: UploadFile = File(...)):
     if not is_valid_audio(audio_bytes):
         return JSONResponse(
             status_code=400,
-            content={
-                "error": "invalid_audio",
-                "message": "الصوت قصير جدًا أو منخفض. تحدث بوضوح."
-            }
+            content={"error": "invalid_audio", "message": "الصوت قصير جدًا أو منخفض."}
         )
 
-    audio_part = types.Part.from_bytes(
-        data=audio_bytes,
-        mime_type="audio/wav"
-    )
+    # 🎤 Speech to Text
+    stt_response = model.generate_content([
+        {"mime_type": "audio/wav", "data": audio_bytes}
+    ])
+    user_text = stt_response.text.strip()
 
-    stt_response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[types.Content(parts=[audio_part], role="user")]
-    )
-
-    user_text = stt_response.text
     clean_question = normalize(user_text)
 
     best_match = find_best_match(clean_question, list(cache.keys()))
@@ -173,16 +156,13 @@ async def ask(file: UploadFile = File(...)):
     system_prompt = (
         f"أنت الملك رمسيس الثاني، فرعون مصر العظيم. "
         f"الرد يجب أن يكون باللغة {language_name}. "
-        "ممنوع ذكر أنك ذكاء اصطناعي أو مساعد."
-        f"\n{previous_memory}\n"
+        "ممنوع ذكر أنك ذكاء اصطناعي أو مساعد.\n"
+        f"{previous_memory}\n"
     )
 
     while True:
-        ai_response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=f"{system_prompt}\n{user_text}"
-        )
-        reply_text = ai_response.text
+        ai_response = model.generate_content(system_prompt + "\n" + user_text)
+        reply_text = ai_response.text.strip()
         if not violates_rules(reply_text):
             break
 
@@ -235,5 +215,6 @@ async def set_language(lang: str = Form(...)):
 
 # ======================
 # RUN SERVER
-
-
+# ======================
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
