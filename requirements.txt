@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-pydub
 google-genai
 elevenlabs
 python-multipart
