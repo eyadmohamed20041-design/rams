@@ -137,7 +137,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            temperature=0.6,
+            
             max_completion_tokens=300  # ✅ تم التعديل هنا
         )
         reply_text = completion.choices[0].message.content
@@ -194,3 +194,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
+
