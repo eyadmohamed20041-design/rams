@@ -1,7 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
-elevenlabs
 pydub
-google-genai
-groq
+openai
