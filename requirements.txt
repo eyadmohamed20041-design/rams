@@ -1,5 +1,6 @@
 fastapi
 uvicorn
-google-genai
-elevenlabs
 python-multipart
+elevenlabs
+groq
+google-genai
