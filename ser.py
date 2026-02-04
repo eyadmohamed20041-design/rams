@@ -138,7 +138,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 {"role": "user", "content": user_text}
             ],
             temperature=0.6,
-            max_tokens=300
+            max_completion_tokens=300  # ✅ تم التعديل هنا
         )
         reply_text = completion.choices[0].message.content
         memory.append(f"User: {user_text}\nRamses: {reply_text}")
