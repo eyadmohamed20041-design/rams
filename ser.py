@@ -2,78 +2,26 @@ import os
 import json
 import string
 import time
-from difflib import get_close_matches
-from contextlib import asynccontextmanager
 import io
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from elevenlabs import ElevenLabs
 from pydub import AudioSegment
-
-# ======================
-# Gemini (STT)
-# ======================
-import google.genai as genai
-from google.genai import types
-
-# ======================
-# Groq AI (LLM)
-# ======================
-from groq import Groq
+import openai
 
 # ======================
 # API KEYS
 # ======================
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-API_SECRET = os.getenv("API_SECRET", "SECRET123")  # 🔐 بسيط للحماية
-
-# ======================
-# GLOBAL CLIENTS
-# ======================
-stt_client = None
-tts_client = None
-llm_client = None
-
-# ======================
-# RATE LIMIT
-# ======================
-last_request_time = 0
-MIN_INTERVAL = 3  # ثواني بين كل request
-
-# ======================
-# LIFESPAN
-# ======================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global stt_client, tts_client, llm_client
-
-    if not GOOGLE_API_KEY:
-        raise RuntimeError("GOOGLE_API_KEY missing")
-
-    if not ELEVEN_API_KEY:
-        raise RuntimeError("ELEVEN_API_KEY missing")
-
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY missing")
-
-    stt_client = genai.Client(api_key=GOOGLE_API_KEY)
-    tts_client = ElevenLabs(api_key=ELEVEN_API_KEY)
-    llm_client = Groq(api_key=GROQ_API_KEY)
-
-    print("✅ Server Started")
-    yield
-    print("🛑 Server Stopped")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # لازم تحط هنا المفتاح
+API_SECRET = os.getenv("API_SECRET", "SECRET123")  # مفتاح حماية بسيط
+openai.api_key = OPENAI_API_KEY
 
 # ======================
 # SERVER SETUP
 # ======================
-app = FastAPI(lifespan=lifespan)
-
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -93,7 +41,6 @@ def root():
 # LANGUAGE
 # ======================
 current_language = "ar"
-
 LANGUAGE_NAMES = {
     "ar": "العربية",
     "en": "الإنجليزية",
@@ -102,7 +49,7 @@ LANGUAGE_NAMES = {
 }
 
 # ======================
-# FILES
+# FILES & CACHE
 # ======================
 TMP_DIR = "/tmp"
 os.makedirs(TMP_DIR, exist_ok=True)
@@ -119,26 +66,21 @@ if os.path.exists(RESPONSES_FILE):
 if os.path.exists(MEMORY_FILE):
     memory = json.load(open(MEMORY_FILE, encoding="utf-8"))
 
-# ======================
-# HELPERS
-# ======================
-def normalize(text: str):
-    text = text.lower().replace(" ", "")
-    return text.translate(str.maketrans("", "", string.punctuation))
-
-def find_best_match(question, cache_keys, cutoff=0.8):
-    matches = get_close_matches(question, cache_keys, n=1, cutoff=cutoff)
-    return matches[0] if matches else None
-
 def save_cache():
     json.dump(cache, open(RESPONSES_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
 def save_memory():
     json.dump(memory, open(MEMORY_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
-def violates_rules(text):
-    forbidden = ["ذكاء", "اصطناعي", "ai", "assistant", "model"]
-    return any(w in text.lower() for w in forbidden)
+def normalize(text: str):
+    text = text.lower().replace(" ", "")
+    return text.translate(str.maketrans("", "", string.punctuation))
+
+# ======================
+# RATE LIMIT
+# ======================
+last_request_time = 0
+MIN_INTERVAL = 3  # ثواني بين كل request
 
 # ======================
 # MAIN ENDPOINT
@@ -160,46 +102,37 @@ async def ask(request: Request, file: UploadFile = File(...)):
     try:
         audio_bytes = await file.read()
 
-        # ===== STT =====
-        audio_part = types.Part.from_bytes(
-            data=audio_bytes,
-            mime_type="audio/wav"
+        # ===== STT: تحويل الصوت لنص باستخدام OpenAI Whisper =====
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "speech.wav"
+        transcript = openai.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file
         )
-
-        stt_response = stt_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[types.Content(parts=[audio_part], role="user")]
-        )
-
-        user_text = stt_response.text or ""
-
+        user_text = transcript.text
         if not user_text.strip():
             return JSONResponse(status_code=400, content={"error": "Empty speech"})
 
         clean_question = normalize(user_text)
 
         # ===== CACHE =====
-        best_match = find_best_match(clean_question, list(cache.keys()))
-        if best_match:
-            audio_file = os.path.basename(cache[best_match]["audio_file"])
+        if clean_question in cache:
+            audio_file_name = os.path.basename(cache[clean_question]["audio_file"])
             return {
-                "text": cache[best_match]["text"],
-                "audio_url": f"/audio/{audio_file}"
+                "text": cache[clean_question]["text"],
+                "audio_url": f"/audio/{audio_file_name}"
             }
 
-        # ===== LLM =====
-        language_name = LANGUAGE_NAMES.get(current_language, "العربية")
-        previous_memory = "\n".join(memory[-5:])
-
+        # ===== LLM: الرد على النص باستخدام GPT-5 Mini =====
         system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
-الرد يجب أن يكون باللغة {language_name}.
+الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
 ممنوع ذكر أنك ذكاء اصطناعي.
-{previous_memory}
+السياق السابق:
+{chr(10).join(memory[-5:])}
 """
-
-        completion = llm_client.chat.completions.create(
-            model = "llama-3.1-8b-instant",
+        completion = openai.chat.completions.create(
+            model="gpt-5-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
@@ -207,31 +140,27 @@ async def ask(request: Request, file: UploadFile = File(...)):
             temperature=0.6,
             max_tokens=300
         )
-
         reply_text = completion.choices[0].message.content
-
-        if violates_rules(reply_text):
-            reply_text = "تفضل أيها الزائر الكريم، بماذا تأمر؟"
-
         memory.append(f"User: {user_text}\nRamses: {reply_text}")
         save_memory()
 
-        # ===== TTS =====
-        audio_stream = tts_client.text_to_speech.convert(
-            text=reply_text,
-            voice_id="JBFqnCBsd6RMkjVDRZzb",
-            model_id="eleven_multilingual_v2"
+        # ===== TTS: تحويل النص لصوت باستخدام OpenAI TTS =====
+        audio_output = openai.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=reply_text
         )
 
-        audio_bytes_full = b"".join(audio_stream)
+        audio_bytes_full = audio_output.read()
 
-        # 🔹 تحويل الصوت إلى PCM 16-bit WAV لضمان توافق Unity
+        # تحويل الصوت لصيغة WAV متوافقة
         audio = AudioSegment.from_file(io.BytesIO(audio_bytes_full))
         audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
 
         audio_filename = os.path.join(TMP_DIR, f"reply_{len(cache)+1}.wav")
         audio.export(audio_filename, format="wav")
 
+        # حفظ الـ cache
         cache[clean_question] = {
             "text": reply_text,
             "audio_file": audio_filename
@@ -244,15 +173,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        err = str(e)
-        print("🔥 ASK ERROR:", err)
-
-        if "detected_unusual_activity" in err:
-            return JSONResponse(
-                status_code=401,
-                content={"error": "AI provider blocked Free Tier usage"}
-            )
-
+        print("🔥 ERROR:", e)
         return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 # ======================
