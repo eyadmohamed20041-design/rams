@@ -10,9 +10,14 @@ from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
 
 from pydub import AudioSegment
-from google import genai
-from google.genai import types
 from elevenlabs import ElevenLabs
+
+# ======================
+# Gemini AI (Google) Imports
+# ======================
+# تم تعديل الاستدعاء حسب آخر نسخة من مكتبة google-genai
+import google_genai as genai
+from google_genai import types
 
 # ======================
 # API KEYS
@@ -169,6 +174,3 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status":"ok","language":current_language}
-
-# ======================
-
