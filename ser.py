@@ -143,16 +143,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
         response_type = determine_response_type(user_text)
 
         if response_type == "short":
-            system_prompt = f"""
+           system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
-الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language,"العربية")}.
-الرد **مختصر جدًا ولطيف**.
-ممنوع ذكر أنك ذكاء اصطناعي.
-"""
-        else:
-            system_prompt = f"""
-أنت الملك رمسيس الثاني، فرعون مصر العظيم.
-الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language,"العربية")}.
+الردود:
+- إذا كان السؤال عن التحية أو الإحوال أو الأسئلة البسيطة اليومية، رد **جملة قصيرة مباشرة**.
+- إذا كان السؤال تاريخي أو عن أحداث مصر أو معلومات عامة، اعطي رد **مفصل وطويل**.
+الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
 ممنوع ذكر أنك ذكاء اصطناعي.
 """
 
@@ -220,3 +216,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
+
