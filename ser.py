@@ -4,7 +4,7 @@ import json
 import string
 import time
 import logging
-import pprint
+import difflib
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,12 +84,67 @@ last_request_time = 0
 MIN_INTERVAL = 2
 
 # ======================
+# SMART TEXT FIXER
+# ======================
+def smart_correct_text(text: str):
+    prompt = f"""
+النص التالي ناتج من تحويل صوت إلى نص وقد يحتوي على أخطاء نطق أو كتابة أو لهجة مصرية.
+
+مهمتك:
+- فهم المقصود الحقيقي للجملة حتى لو كانت عامية.
+- تصحيح أي أخطاء نطق أو كتابة.
+- إعادة صياغة الجملة بلغة عربية واضحة.
+- لا تضف أي كلمات جديدة.
+
+النص:
+{text}
+"""
+
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=prompt,
+        max_output_tokens=150
+    )
+
+    fixed = ""
+    for item in getattr(response, "output", []):
+        contents = getattr(item, "content", None)
+        if contents:
+            for content in contents:
+                if getattr(content, "type", "") == "output_text":
+                    fixed += getattr(content, "text", "")
+
+    return fixed.strip() if fixed else text
+
+# ======================
+# SMART CACHE MATCHING
+# ======================
+def smart_cache_lookup(text: str, threshold=0.85):
+    norm = normalize(text)
+    best_match = None
+    best_score = 0
+
+    for k in cache.keys():
+        score = difflib.SequenceMatcher(None, norm, k).ratio()
+        if score > best_score:
+            best_score = score
+            best_match = k
+
+    if best_score >= threshold:
+        return cache.get(best_match)
+
+    return None
+
+# ======================
 # HELPER
 # ======================
 def determine_response_type(user_text: str):
-    greetings = ["إزيك", "ازيك", "كيف حالك", "مرحبا", "hello", "hi", "hallo", "你好"]
-    for g in greetings:
-        if g.lower() in user_text.lower():
+    greetings_and_personal = [
+        "ازيك", "إزيك", "كيف حالك", "مرحبا", "hello", "hi",
+        "زوجتك", "اولادك", "أطفالك", "ابنك", "بنتك"
+    ]
+    for phrase in greetings_and_personal:
+        if phrase in user_text.lower():
             return "short"
     return "normal"
 
@@ -100,29 +155,19 @@ def determine_response_type(user_text: str):
 async def ask(request: Request, file: UploadFile = File(...)):
     global last_request_time
 
-    # AUTH
     if request.headers.get("x-api-key") != API_SECRET:
         return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
-    # RATE LIMIT
     now = time.time()
     if now - last_request_time < MIN_INTERVAL:
         return JSONResponse(status_code=429, content={"error": "Too many requests"})
     last_request_time = now
 
     try:
-        # ======================
-        # READ AUDIO
-        # ======================
         audio_bytes = await file.read()
         if not audio_bytes or len(audio_bytes) < 2000:
             return JSONResponse(status_code=400, content={"error": "Audio too small"})
 
-        logging.info(f"📥 Audio size: {len(audio_bytes)} bytes")
-
-        # ======================
-        # WHISPER STT
-        # ======================
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = "speech.wav"
 
@@ -132,96 +177,58 @@ async def ask(request: Request, file: UploadFile = File(...)):
             response_format="text"
         )
 
-        user_text = transcript.strip()
-        if not user_text:
+        raw_text = transcript.strip()
+        if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech detected"})
 
-        logging.info(f"🎤 USER: {user_text}")
+        fixed_text = smart_correct_text(raw_text)
 
-        # ======================
-        # CACHE
-        # ======================
-        clean_question = normalize(user_text)
-        if clean_question in cache:
-            audio_name = os.path.basename(cache[clean_question]["audio_file"])
+        logging.info(f"🎤 RAW: {raw_text}")
+        logging.info(f"🧠 FIXED: {fixed_text}")
+
+        cached = smart_cache_lookup(fixed_text)
+        if cached:
+            audio_name = os.path.basename(cached["audio_file"])
             return {
-                "text": cache[clean_question]["text"],
-                "audio_url": f"/audio/{audio_name}"
+                "text": cached["text"],
+                "audio_url": f"/audio/{audio_name}",
+                "cached": True
             }
 
-        response_type = determine_response_type(user_text)
+        response_type = determine_response_type(fixed_text)
 
-        # ======================
-        # SYSTEM PROMPT
-        # ======================
         system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
-الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
-ممنوع ذكر أنك ذكاء اصطناعي.
+
+- الرد باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}
+- لا تذكر العصر الحديث أو التكنولوجيا.
+- لا تخرج عن شخصيتك الفرعونية.
 """
 
         if response_type == "short":
-            system_prompt += """
-إذا كان السؤال تحية أو سؤال بسيط:
-- رد بجملة قصيرة مباشرة.
-غير ذلك:
-- رد تاريخي مفصل.
-"""
+            system_prompt += "\nالرد يجب أن يكون قصير جدًا."
         else:
-            system_prompt += """
-الرد يجب أن يكون واضحًا ومفصلًا.
-تجنب الردود القصيرة جدًا.
-"""
+            system_prompt += "\nالرد يجب أن يكون مفصل ودقيق تاريخيًا."
 
-        # ======================
-        # GPT - RESPONSES API
-        # ======================
         response = client.responses.create(
             model="gpt-4o-mini",
-            
             input=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text}
+                {"role": "user", "content": fixed_text}
             ],
-            max_output_tokens=2000  # زودناها لتجنب incomplete
+            max_output_tokens=2000
         )
 
-        # ======================
-        # DEBUG PRINT (Optional)
-        # ======================
-        pprint.pprint(response.model_dump())
-
-        # ======================
-        # SAFE OUTPUT PARSING
-        # ======================
         reply_text = ""
-
         for item in getattr(response, "output", []):
             contents = getattr(item, "content", None)
             if contents:
                 for content in contents:
                     if getattr(content, "type", "") == "output_text":
                         reply_text += getattr(content, "text", "")
-                    elif hasattr(content, "text"):
-                        reply_text += getattr(content, "text", "")
 
-        # fallback آمن على response.text.content
-        text_obj = getattr(response, "text", None)
-        if not reply_text and text_obj and hasattr(text_obj, "content"):
-            reply_text = text_obj.content
+        reply_text = reply_text.strip() or "عذرًا لم أفهم سؤالك."
 
-        reply_text = reply_text.strip()
-
-        # لو كله فاضي، رجع placeholder بدل Exception
-        if not reply_text:
-            logging.warning("⚠️ AI response empty, returning placeholder")
-            reply_text = "عذرًا، لم يتمكن الموديل من إنتاج رد هذه المرة."
-
-        logging.info(f"🤖 AI: {reply_text}")
-
-        # ======================
-        # TTS
-        # ======================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
@@ -229,19 +236,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         audio_bytes_full = speech.read()
-        if not audio_bytes_full:
-            raise Exception("TTS failed")
-
         audio = AudioSegment.from_file(io.BytesIO(audio_bytes_full))
         audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
 
         audio_filename = os.path.join(TMP_DIR, f"reply_{len(cache)+1}.wav")
         audio.export(audio_filename, format="wav")
 
-        # ======================
-        # SAVE CACHE
-        # ======================
-        cache[clean_question] = {
+        cache[normalize(fixed_text)] = {
             "text": reply_text,
             "audio_file": audio_filename
         }
@@ -249,7 +250,8 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
         return {
             "text": reply_text,
-            "audio_url": f"/audio/{os.path.basename(audio_filename)}"
+            "audio_url": f"/audio/{os.path.basename(audio_filename)}",
+            "cached": False
         }
 
     except Exception as e:
@@ -274,22 +276,3 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
-
-# ======================
-# DEBUG ENDPOINT
-# ======================
-@app.post("/debug_response")
-async def debug_response(file: UploadFile = File(...)):
-    audio_bytes = await file.read()
-    audio_file = io.BytesIO(audio_bytes)
-    audio_file.name = "speech.wav"
-
-    response = client.responses.create(
-        model="gpt-5-mini",
-        input=[{"role": "user", "content": "السلام عليكم"}],
-        max_output_tokens=50
-    )
-
-    return response.model_dump()
-
-
