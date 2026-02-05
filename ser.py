@@ -186,9 +186,9 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         # ======================
-        # DEBUG PRINT - اطبع الاستجابة كاملة لمرة واحدة
+        # DEBUG PRINT (Optional)
         # ======================
-        pprint.pprint(response.model_dump())
+        pprint.pprint(response.model_dump())  # ممكن تشوف الشكل الكامل للاستجابة
 
         # ======================
         # SAFE OUTPUT PARSING
@@ -204,9 +204,11 @@ async def ask(request: Request, file: UploadFile = File(...)):
                     elif hasattr(content, "text"):
                         reply_text += getattr(content, "text", "")
 
-        # fallback: استخدم response.text لو reply_text فاضي
+        # fallback آمن على response.text.content
         if not reply_text:
-            reply_text = getattr(response, "text", {}).get("content", "")
+            text_obj = getattr(response, "text", None)
+            if text_obj and hasattr(text_obj, "content"):
+                reply_text = text_obj.content
 
         reply_text = reply_text.strip()
         logging.info(f"🤖 AI: {reply_text}")
@@ -269,3 +271,21 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
+
+# ======================
+# DEBUG ENDPOINT - رجع الشكل الصح من المصدر
+# ======================
+@app.post("/debug_response")
+async def debug_response(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
+    audio_file = io.BytesIO(audio_bytes)
+    audio_file.name = "speech.wav"
+
+    response = client.responses.create(
+        model="gpt-5-mini",
+        input=[{"role": "user", "content": "السلام عليكم"}],
+        max_output_tokens=50
+    )
+
+    # ارجع الاستجابة كاملة كـ dict
+    return response.model_dump()
