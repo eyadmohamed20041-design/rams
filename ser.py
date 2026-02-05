@@ -182,13 +182,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            max_output_tokens=250
+            max_output_tokens=500  # زودناها لتجنب incomplete
         )
 
         # ======================
         # DEBUG PRINT (Optional)
         # ======================
-        pprint.pprint(response.model_dump())  # ممكن تشوف الشكل الكامل للاستجابة
+        pprint.pprint(response.model_dump())
 
         # ======================
         # SAFE OUTPUT PARSING
@@ -205,16 +205,18 @@ async def ask(request: Request, file: UploadFile = File(...)):
                         reply_text += getattr(content, "text", "")
 
         # fallback آمن على response.text.content
-        if not reply_text:
-            text_obj = getattr(response, "text", None)
-            if text_obj and hasattr(text_obj, "content"):
-                reply_text = text_obj.content
+        text_obj = getattr(response, "text", None)
+        if not reply_text and text_obj and hasattr(text_obj, "content"):
+            reply_text = text_obj.content
 
         reply_text = reply_text.strip()
-        logging.info(f"🤖 AI: {reply_text}")
 
+        # لو كله فاضي، رجع placeholder بدل Exception
         if not reply_text:
-            raise Exception("Empty AI response after parsing")
+            logging.warning("⚠️ AI response empty, returning placeholder")
+            reply_text = "عذرًا، لم يتمكن الموديل من إنتاج رد هذه المرة."
+
+        logging.info(f"🤖 AI: {reply_text}")
 
         # ======================
         # TTS
@@ -273,7 +275,7 @@ async def set_language(lang: str = Form(...)):
     return {"status": "ok", "language": current_language}
 
 # ======================
-# DEBUG ENDPOINT - رجع الشكل الصح من المصدر
+# DEBUG ENDPOINT
 # ======================
 @app.post("/debug_response")
 async def debug_response(file: UploadFile = File(...)):
@@ -287,5 +289,4 @@ async def debug_response(file: UploadFile = File(...)):
         max_output_tokens=50
     )
 
-    # ارجع الاستجابة كاملة كـ dict
     return response.model_dump()
