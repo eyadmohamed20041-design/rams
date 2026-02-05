@@ -57,9 +57,9 @@ current_language = "ar"
 
 LANGUAGE_NAMES = {
     "ar": "العربية",
-    "en": "الإنجليزية",
-    "de": "الألمانية",
-    "zh": "الصينية"
+    "en": "English",
+    "de": "Deutsch",
+    "zh": "中文"
 }
 
 
@@ -105,7 +105,7 @@ def normalize(text: str):
 # RATE LIMIT
 # ======================
 last_request_time = 0
-MIN_INTERVAL = 3
+MIN_INTERVAL = 2
 
 
 # ======================
@@ -151,7 +151,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         if not audio_bytes or len(audio_bytes) < 2000:
             return JSONResponse(
                 status_code=400,
-                content={"error": "Audio file too small"}
+                content={"error": "Audio too small"}
             )
 
 
@@ -170,13 +170,21 @@ async def ask(request: Request, file: UploadFile = File(...)):
             response_format="text"
         )
 
-        user_text = transcript.strip()
+        user_text = transcript
 
-
-        if not user_text or len(user_text) < 2:
+        if not user_text:
             return JSONResponse(
                 status_code=400,
-                content={"error": "No clear speech detected"}
+                content={"error": "No speech detected"}
+            )
+
+        user_text = user_text.strip()
+
+
+        if len(user_text) < 2:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Unclear speech"}
             )
 
 
@@ -205,8 +213,8 @@ async def ask(request: Request, file: UploadFile = File(...)):
         # ======================
         system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
-الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
-ممنوع ذكر أنك ذكاء اصطناعي.
+الرد يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
+لا تذكر أنك ذكاء اصطناعي.
 السياق السابق:
 {chr(10).join(memory[-5:])}
 """
@@ -218,18 +226,25 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            max_completion_tokens=300
+            max_completion_tokens=250
         )
 
 
-        reply_text = completion.choices[0].message.content.strip()
+        reply_text = completion.choices[0].message.content
 
 
-        if not reply_text or len(reply_text) < 3:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "AI returned empty reply"}
-            )
+        if not reply_text:
+            raise Exception("GPT returned empty reply")
+
+
+        reply_text = reply_text.strip()
+
+
+        if len(reply_text) < 3:
+            return {
+                "text": "لم أستطع الرد الآن، حاول مرة أخرى.",
+                "audio_url": None
+            }
 
 
         logging.info(f"🤖 AI: {reply_text}")
@@ -259,14 +274,11 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
 
         if not audio_bytes_full:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "TTS failed"}
-            )
+            raise Exception("TTS failed")
 
 
         # ======================
-        # CONVERT TO WAV
+        # CONVERT
         # ======================
         audio = AudioSegment.from_file(
             io.BytesIO(audio_bytes_full)
@@ -287,7 +299,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
 
         # ======================
-        # CACHE SAVE
+        # CACHE
         # ======================
         cache[clean_question] = {
             "text": reply_text,
@@ -305,11 +317,11 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
     except Exception as e:
 
-        logging.error("🔥 SERVER ERROR", exc_info=True)
+        logging.error(f"🔥 ERROR: {str(e)}", exc_info=True)
 
         return JSONResponse(
             status_code=500,
-            content={"error": "Internal server error"}
+            content={"error": str(e)}
         )
 
 
@@ -324,7 +336,7 @@ async def serve_audio(audio_file: str):
     if not os.path.exists(file_path):
         return JSONResponse(
             status_code=404,
-            content={"error": "file_not_found"}
+            content={"error": "Not found"}
         )
 
     return FileResponse(
