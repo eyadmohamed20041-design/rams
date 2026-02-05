@@ -177,12 +177,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
         # GPT - RESPONSES API
         # ======================
         response = client.responses.create(
-            model="gpt-5-mini",
+            model="gpt-4o-mini"
+            
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            max_output_tokens=500  # زودناها لتجنب incomplete
+            max_output_tokens=2000  # زودناها لتجنب incomplete
         )
 
         # ======================
@@ -290,3 +291,4 @@ async def debug_response(file: UploadFile = File(...)):
     )
 
     return response.model_dump()
+
