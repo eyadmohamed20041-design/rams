@@ -142,14 +142,26 @@ async def ask(request: Request, file: UploadFile = File(...)):
         # تحديد نوع الرد
         response_type = determine_response_type(user_text)
 
-        if response_type == "short":
-           system_prompt = f"""
+        # ======================
+        # SYSTEM PROMPT
+        # ======================
+        system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
+الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
+ممنوع ذكر أنك ذكاء اصطناعي.
+"""
+
+        if response_type == "short":
+            system_prompt += """
 الردود:
 - إذا كان السؤال عن التحية أو الإحوال أو الأسئلة البسيطة اليومية، رد **جملة قصيرة مباشرة**.
 - إذا كان السؤال تاريخي أو عن أحداث مصر أو معلومات عامة، اعطي رد **مفصل وطويل**.
-الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
-ممنوع ذكر أنك ذكاء اصطناعي.
+"""
+        else:
+            system_prompt += """
+الردود:
+- حاول أن يكون الرد مفصل وواضح إذا كان السؤال تاريخي أو عن أحداث مصر أو معلومات عامة.
+- تجنب الردود القصيرة جدًا.
 """
 
         # GPT
@@ -165,10 +177,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply_text = completion.choices[0].message.content.strip()
         if not reply_text or len(reply_text) < 3:
             # fallback آمن
-            if response_type == "short":
-                reply_text = "أهلاً! 😃"
-            else:
-                reply_text = "لم أستطع الرد الآن، حاول مرة أخرى."
+            reply_text = "أهلاً! 😃" if response_type == "short" else "لم أستطع الرد الآن، حاول مرة أخرى."
         logging.info(f"🤖 AI: {reply_text}")
 
         # TTS
@@ -216,4 +225,3 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok", "language": current_language}
-
