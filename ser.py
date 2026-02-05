@@ -82,6 +82,17 @@ last_request_time = 0
 MIN_INTERVAL = 2
 
 # ======================
+# HELPER: تحديد نوع الرد
+# ======================
+def determine_response_type(user_text: str):
+    greetings = ["إزيك","ازيك","كيف حالك","مرحبا","hello","hi","hallo","你好"]
+    user_lower = user_text.lower()
+    for word in greetings:
+        if word in user_lower:
+            return "short"
+    return "normal"
+
+# ======================
 # MAIN ENDPOINT
 # ======================
 @app.post("/ask")
@@ -114,7 +125,6 @@ async def ask(request: Request, file: UploadFile = File(...)):
             file=audio_file,
             response_format="text"
         )
-
         user_text = transcript.strip()
         if not user_text or len(user_text) < 2:
             return JSONResponse(status_code=400, content={"error": "No clear speech detected"})
@@ -129,13 +139,24 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 "audio_url": f"/audio/{audio_file_name}"
             }
 
-        # GPT
-        system_prompt = f"""
+        # تحديد نوع الرد
+        response_type = determine_response_type(user_text)
+
+        if response_type == "short":
+            system_prompt = f"""
 أنت الملك رمسيس الثاني، فرعون مصر العظيم.
-الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
+الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language,"العربية")}.
+الرد **مختصر جدًا ولطيف**.
+ممنوع ذكر أنك ذكاء اصطناعي.
+"""
+        else:
+            system_prompt = f"""
+أنت الملك رمسيس الثاني، فرعون مصر العظيم.
+الرد يجب أن يكون باللغة {LANGUAGE_NAMES.get(current_language,"العربية")}.
 ممنوع ذكر أنك ذكاء اصطناعي.
 """
 
+        # GPT
         completion = openai.chat.completions.create(
             model="gpt-5-mini",
             messages=[
@@ -145,10 +166,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
             max_completion_tokens=250
         )
 
-        reply_text = completion.choices[0].message.content
-        if not reply_text or len(reply_text.strip()) < 3:
-            reply_text = "لم أستطع الرد الآن، حاول مرة أخرى."
-        reply_text = reply_text.strip()
+        reply_text = completion.choices[0].message.content.strip()
+        if not reply_text or len(reply_text) < 3:
+            # fallback آمن
+            if response_type == "short":
+                reply_text = "أهلاً! 😃"
+            else:
+                reply_text = "لم أستطع الرد الآن، حاول مرة أخرى."
         logging.info(f"🤖 AI: {reply_text}")
 
         # TTS
