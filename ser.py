@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from pydub import AudioSegment
-import openai
+from openai import OpenAI
 
 # ======================
 # LOGGING
@@ -22,7 +22,8 @@ logging.basicConfig(level=logging.INFO)
 # ======================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_SECRET = os.getenv("API_SECRET", "SECRET123")
-openai.api_key = OPENAI_API_KEY
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ======================
 # SERVER SETUP
@@ -82,13 +83,12 @@ last_request_time = 0
 MIN_INTERVAL = 2
 
 # ======================
-# HELPER: تحديد نوع الرد
+# HELPER
 # ======================
 def determine_response_type(user_text: str):
-    greetings = ["إزيك","ازيك","كيف حالك","مرحبا","hello","hi","hallo","你好"]
-    user_lower = user_text.lower()
-    for word in greetings:
-        if word in user_lower:
+    greetings = ["إزيك", "ازيك", "كيف حالك", "مرحبا", "hello", "hi", "hallo", "你好"]
+    for g in greetings:
+        if g.lower() in user_text.lower():
             return "short"
     return "normal"
 
@@ -114,32 +114,38 @@ async def ask(request: Request, file: UploadFile = File(...)):
         audio_bytes = await file.read()
         if not audio_bytes or len(audio_bytes) < 2000:
             return JSONResponse(status_code=400, content={"error": "Audio too small"})
+
         logging.info(f"📥 Audio size: {len(audio_bytes)} bytes")
 
+        # ======================
         # WHISPER STT
+        # ======================
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = "speech.wav"
 
-        transcript = openai.audio.transcriptions.create(
+        transcript = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             response_format="text"
         )
+
         user_text = transcript.strip()
-        if not user_text or len(user_text) < 2:
-            return JSONResponse(status_code=400, content={"error": "No clear speech detected"})
+        if not user_text:
+            return JSONResponse(status_code=400, content={"error": "No speech detected"})
+
         logging.info(f"🎤 USER: {user_text}")
 
+        # ======================
         # CACHE
+        # ======================
         clean_question = normalize(user_text)
         if clean_question in cache:
-            audio_file_name = os.path.basename(cache[clean_question]["audio_file"])
+            audio_name = os.path.basename(cache[clean_question]["audio_file"])
             return {
                 "text": cache[clean_question]["text"],
-                "audio_url": f"/audio/{audio_file_name}"
+                "audio_url": f"/audio/{audio_name}"
             }
 
-        # تحديد نوع الرد
         response_type = determine_response_type(user_text)
 
         # ======================
@@ -153,44 +159,48 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
         if response_type == "short":
             system_prompt += """
-الردود:
-- إذا كان السؤال عن التحية أو الإحوال أو الأسئلة البسيطة اليومية، رد **جملة قصيرة مباشرة**.
-- إذا كان السؤال تاريخي أو عن أحداث مصر أو معلومات عامة، اعطي رد **مفصل وطويل**.
+إذا كان السؤال تحية أو سؤال بسيط:
+- رد بجملة قصيرة مباشرة.
+غير ذلك:
+- رد تاريخي مفصل وقوي.
 """
         else:
             system_prompt += """
-الردود:
-- حاول أن يكون الرد مفصل وواضح إذا كان السؤال تاريخي أو عن أحداث مصر أو معلومات عامة.
-- تجنب الردود القصيرة جدًا.
+الرد يجب أن يكون واضحًا ومفصلًا.
+تجنب الردود القصيرة جدًا.
 """
 
-        # GPT
-        completion = openai.chat.completions.create(
+        # ======================
+        # GPT (Responses API)
+        # ======================
+        response = client.responses.create(
             model="gpt-5-mini",
-            messages=[
+            input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            max_completion_tokens=250
+            max_output_tokens=250
         )
 
-        reply_text = completion.choices[0].message.content.strip()
-        if not reply_text or len(reply_text) < 3:
-            # fallback آمن
-            reply_text = "أهلاً! 😃" if response_type == "short" else "لم أستطع الرد الآن، حاول مرة أخرى."
+        reply_text = response.output_text.strip()
         logging.info(f"🤖 AI: {reply_text}")
 
+        if not reply_text:
+            raise Exception("Empty AI response")
+
+        # ======================
         # TTS
-        audio_output = openai.audio.speech.create(
+        # ======================
+        speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
             input=reply_text
         )
-        audio_bytes_full = audio_output.read()
+
+        audio_bytes_full = speech.read()
         if not audio_bytes_full:
             raise Exception("TTS failed")
 
-        # CONVERT TO WAV
         audio = AudioSegment.from_file(io.BytesIO(audio_bytes_full))
         audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
 
@@ -198,24 +208,30 @@ async def ask(request: Request, file: UploadFile = File(...)):
         audio.export(audio_filename, format="wav")
 
         # SAVE CACHE
-        cache[clean_question] = {"text": reply_text, "audio_file": audio_filename}
+        cache[clean_question] = {
+            "text": reply_text,
+            "audio_file": audio_filename
+        }
         save_cache()
 
-        return {"text": reply_text, "audio_url": f"/audio/{os.path.basename(audio_filename)}"}
+        return {
+            "text": reply_text,
+            "audio_url": f"/audio/{os.path.basename(audio_filename)}"
+        }
 
     except Exception as e:
-        logging.error(f"🔥 ERROR: {str(e)}", exc_info=True)
+        logging.error("🔥 ERROR", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ======================
-# AUDIO
+# AUDIO SERVE
 # ======================
 @app.get("/audio/{audio_file}")
 async def serve_audio(audio_file: str):
-    file_path = os.path.join(TMP_DIR, audio_file)
-    if not os.path.exists(file_path):
+    path = os.path.join(TMP_DIR, audio_file)
+    if not os.path.exists(path):
         return JSONResponse(status_code=404, content={"error": "file_not_found"})
-    return FileResponse(file_path, media_type="audio/wav")
+    return FileResponse(path, media_type="audio/wav")
 
 # ======================
 # LANGUAGE
