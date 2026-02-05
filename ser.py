@@ -186,7 +186,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         # ======================
-        # DEBUG PRINT - اطبع الاستجابة كاملة عشان تعرف structure
+        # DEBUG PRINT - اطبع الاستجابة كاملة لمرة واحدة
         # ======================
         pprint.pprint(response.model_dump())
 
@@ -196,13 +196,17 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply_text = ""
 
         for item in getattr(response, "output", []):
-            if getattr(item, "type", "") == "message":
-                for content in getattr(item, "content", []):
-                    # ✅ آمن لأي نوع محتوى
+            contents = getattr(item, "content", None)
+            if contents:
+                for content in contents:
                     if getattr(content, "type", "") == "output_text":
                         reply_text += getattr(content, "text", "")
-                    elif hasattr(content, "text"):  # fallback لو type مختلف
+                    elif hasattr(content, "text"):
                         reply_text += getattr(content, "text", "")
+
+        # fallback: استخدم response.text لو reply_text فاضي
+        if not reply_text:
+            reply_text = getattr(response, "text", {}).get("content", "")
 
         reply_text = reply_text.strip()
         logging.info(f"🤖 AI: {reply_text}")
