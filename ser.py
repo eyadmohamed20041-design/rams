@@ -177,7 +177,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         # GPT - RESPONSES API
         # ======================
         response = client.responses.create(
-            model="gpt-4o-mini"
+            model="gpt-4o-mini",
             
             input=[
                 {"role": "system", "content": system_prompt},
@@ -291,4 +291,5 @@ async def debug_response(file: UploadFile = File(...)):
     )
 
     return response.model_dump()
+
 
