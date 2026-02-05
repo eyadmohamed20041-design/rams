@@ -4,6 +4,7 @@ import json
 import string
 import time
 import logging
+import pprint
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -185,15 +186,21 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         # ======================
+        # DEBUG PRINT (Optional)
+        # ======================
+        # pprint.pprint(response.model_dump())
+
+        # ======================
         # SAFE OUTPUT PARSING
         # ======================
         reply_text = ""
 
         for item in response.output:
-            if item["type"] == "message":
-                for content in item["content"]:
-                    if content["type"] == "output_text":
-                        reply_text += content["text"]
+            # ✅ استخدم dot notation بدل الأقواس
+            if getattr(item, "type", "") == "message":
+                for content in getattr(item, "content", []):
+                    if getattr(content, "type", "") == "output_text":
+                        reply_text += getattr(content, "text", "")
 
         reply_text = reply_text.strip()
         logging.info(f"🤖 AI: {reply_text}")
