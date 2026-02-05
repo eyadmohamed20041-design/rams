@@ -110,7 +110,9 @@ async def ask(request: Request, file: UploadFile = File(...)):
     last_request_time = now
 
     try:
+        # ======================
         # READ AUDIO
+        # ======================
         audio_bytes = await file.read()
         if not audio_bytes or len(audio_bytes) < 2000:
             return JSONResponse(status_code=400, content={"error": "Audio too small"})
@@ -162,7 +164,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 إذا كان السؤال تحية أو سؤال بسيط:
 - رد بجملة قصيرة مباشرة.
 غير ذلك:
-- رد تاريخي مفصل وقوي.
+- رد تاريخي مفصل.
 """
         else:
             system_prompt += """
@@ -171,7 +173,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 """
 
         # ======================
-        # GPT (Responses API)
+        # GPT - RESPONSES API
         # ======================
         response = client.responses.create(
             model="gpt-5-mini",
@@ -182,11 +184,22 @@ async def ask(request: Request, file: UploadFile = File(...)):
             max_output_tokens=250
         )
 
-        reply_text = response.output_text.strip()
+        # ======================
+        # SAFE OUTPUT PARSING
+        # ======================
+        reply_text = ""
+
+        for item in response.output:
+            if item["type"] == "message":
+                for content in item["content"]:
+                    if content["type"] == "output_text":
+                        reply_text += content["text"]
+
+        reply_text = reply_text.strip()
         logging.info(f"🤖 AI: {reply_text}")
 
         if not reply_text:
-            raise Exception("Empty AI response")
+            raise Exception("Empty AI response after parsing")
 
         # ======================
         # TTS
@@ -207,7 +220,9 @@ async def ask(request: Request, file: UploadFile = File(...)):
         audio_filename = os.path.join(TMP_DIR, f"reply_{len(cache)+1}.wav")
         audio.export(audio_filename, format="wav")
 
+        # ======================
         # SAVE CACHE
+        # ======================
         cache[clean_question] = {
             "text": reply_text,
             "audio_file": audio_filename
