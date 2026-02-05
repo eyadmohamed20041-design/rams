@@ -186,20 +186,22 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         # ======================
-        # DEBUG PRINT (Optional)
+        # DEBUG PRINT - اطبع الاستجابة كاملة عشان تعرف structure
         # ======================
-        # pprint.pprint(response.model_dump())
+        pprint.pprint(response.model_dump())
 
         # ======================
         # SAFE OUTPUT PARSING
         # ======================
         reply_text = ""
 
-        for item in response.output:
-            # ✅ استخدم dot notation بدل الأقواس
+        for item in getattr(response, "output", []):
             if getattr(item, "type", "") == "message":
                 for content in getattr(item, "content", []):
+                    # ✅ آمن لأي نوع محتوى
                     if getattr(content, "type", "") == "output_text":
+                        reply_text += getattr(content, "text", "")
+                    elif hasattr(content, "text"):  # fallback لو type مختلف
                         reply_text += getattr(content, "text", "")
 
         reply_text = reply_text.strip()
