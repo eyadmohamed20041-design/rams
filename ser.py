@@ -1,10 +1,12 @@
 import os
 import io
 import json
-import string
 import time
 import logging
-import difflib
+import string
+import re
+import math
+import hashlib
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,57 +67,137 @@ LANGUAGE_NAMES = {
 
 
 # ======================
-# FILES & CACHE
+# STORAGE
 # ======================
-TMP_DIR = "/tmp"
-os.makedirs(TMP_DIR, exist_ok=True)
+DATA_DIR = "./data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-RESPONSES_FILE = os.path.join(TMP_DIR, "responses.json")
+CACHE_FILE = os.path.join(DATA_DIR, "cache.json")
+AUDIO_DIR = os.path.join(DATA_DIR, "audio")
 
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
+
+# ======================
+# LOAD CACHE
+# ======================
 cache = {}
 
-
-if os.path.exists(RESPONSES_FILE):
-    with open(RESPONSES_FILE, encoding="utf-8") as f:
+if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
         cache = json.load(f)
 
 
 def save_cache():
-    with open(RESPONSES_FILE, "w", encoding="utf-8") as f:
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+# ======================
+# TEXT NORMALIZE
+# ======================
 def normalize(text: str):
-    text = text.lower().replace(" ", "")
-    return text.translate(str.maketrans("", "", string.punctuation))
+
+    text = text.lower().strip()
+
+    # إزالة التشكيل العربي
+    tashkeel = re.compile(r'[\u0617-\u061A\u064B-\u0652]')
+    text = re.sub(tashkeel, '', text)
+
+    # إزالة الرموز
+    text = re.sub(r'[^\w\s]', '', text)
+
+    # مسافات
+    text = re.sub(r'\s+', ' ', text)
+
+    return text
 
 
 # ======================
-# RATE LIMIT
+# HASH KEY
 # ======================
-last_request_time = 0
-MIN_INTERVAL = 2
+def make_cache_key(text):
+
+    norm = normalize(text)
+
+    return hashlib.sha256(
+        norm.encode("utf-8")
+    ).hexdigest()
 
 
 # ======================
-# SMART TEXT FIXER
+# EMBEDDING
+# ======================
+def get_embedding(text):
+
+    res = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+
+    return res.data[0].embedding
+
+
+# ======================
+# COSINE SIMILARITY
+# ======================
+def cosine_similarity(a, b):
+
+    dot = sum(x*y for x, y in zip(a, b))
+
+    na = math.sqrt(sum(x*x for x in a))
+    nb = math.sqrt(sum(x*x for x in b))
+
+    return dot / (na * nb)
+
+
+# ======================
+# SEMANTIC CACHE
+# ======================
+def semantic_cache_lookup(new_emb, threshold=0.88):
+
+    best = None
+    best_score = 0
+
+    for item in cache.values():
+
+        old_emb = item.get("embedding")
+
+        if not old_emb:
+            continue
+
+        score = cosine_similarity(new_emb, old_emb)
+
+        if score > best_score:
+            best_score = score
+            best = item
+
+    if best_score >= threshold:
+        return best
+
+    return None
+
+
+# ======================
+# FIX TEXT
 # ======================
 def smart_correct_text(text: str):
 
     prompt = f"""
-النص التالي ناتج من تحويل صوت إلى نص وقد يحتوي على أخطاء.
+النص التالي ناتج من تحويل صوت إلى نص.
 
-مهمتك:
-- فهم المقصود حتى لو كان عامية.
+المطلوب:
 - تصحيح الأخطاء.
-- إعادة الصياغة بلغة عربية واضحة.
-- بدون إضافة كلمات جديدة.
+- إعادة الصياغة بالعربية الفصحى.
+- بدون تشكيل.
+- بدون رموز.
+- مناسب للنطق.
 
 النص:
 {text}
 """
 
-    response = client.responses.create(
+    res = client.responses.create(
         model="gpt-4o-mini",
         input=prompt,
         max_output_tokens=150
@@ -123,55 +205,47 @@ def smart_correct_text(text: str):
 
     fixed = ""
 
-    for item in getattr(response, "output", []):
-        contents = getattr(item, "content", None)
+    for item in getattr(res, "output", []):
+        for content in getattr(item, "content", []):
+            if content.type == "output_text":
+                fixed += content.text
 
-        if contents:
-            for content in contents:
-                if getattr(content, "type", "") == "output_text":
-                    fixed += getattr(content, "text", "")
-
-    return fixed.strip() if fixed else text
+    return fixed.strip() or text
 
 
 # ======================
-# FUZZY CACHE
+# CLEAN TTS
 # ======================
-def smart_cache_lookup(text: str, threshold=0.85):
+def clean_for_tts(text):
 
-    norm = normalize(text)
+    text = normalize(text)
 
-    best_match = None
-    best_score = 0
+    text = text.replace("ـ", "")
 
-    for k in cache.keys():
-
-        score = difflib.SequenceMatcher(None, norm, k).ratio()
-
-        if score > best_score:
-            best_score = score
-            best_match = k
-
-    if best_score >= threshold:
-        return cache.get(best_match)
-
-    return None
+    return text
 
 
 # ======================
 # RESPONSE TYPE
 # ======================
-def determine_response_type(user_text: str):
+def determine_response_type(text):
 
     greetings = [
-        "ازيك", "إزيك", "كيف حالك", "مرحبا", "hello", "hi"
+        "ازيك", "عامل اي", "اخبارك", "hello", "hi"
     ]
 
     for g in greetings:
-        if g in user_text.lower():
+        if g in text.lower():
             return "short"
 
     return "normal"
+
+
+# ======================
+# RATE LIMIT
+# ======================
+last_request_time = 0
+MIN_INTERVAL = 2
 
 
 # ======================
@@ -183,16 +257,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
     global last_request_time
 
 
-    # ------------------
-    # API KEY CHECK
-    # ------------------
+    # -------- AUTH --------
     if request.headers.get("x-api-key") != API_SECRET:
         return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
 
-    # ------------------
-    # RATE LIMIT
-    # ------------------
+    # -------- RATE LIMIT --------
     now = time.time()
 
     if now - last_request_time < MIN_INTERVAL:
@@ -203,12 +273,10 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
     try:
 
-        # ------------------
-        # READ AUDIO
-        # ------------------
+        # -------- READ AUDIO --------
         audio_bytes = await file.read()
 
-        if not audio_bytes or len(audio_bytes) < 2000:
+        if len(audio_bytes) < 2000:
             return JSONResponse(status_code=400, content={"error": "Audio too small"})
 
 
@@ -216,9 +284,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         audio_file.name = "speech.wav"
 
 
-        # ------------------
-        # TRANSCRIBE
-        # ------------------
+        # -------- TRANSCRIBE --------
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
@@ -228,90 +294,78 @@ async def ask(request: Request, file: UploadFile = File(...)):
         raw_text = transcript.strip()
 
         if not raw_text:
-            return JSONResponse(status_code=400, content={"error": "No speech detected"})
+            return JSONResponse(status_code=400, content={"error": "No speech"})
 
 
-        # ------------------
-        # FIX TEXT
-        # ------------------
+        # -------- FIX TEXT --------
         fixed_text = smart_correct_text(raw_text)
 
 
-        logging.info(f"🎤 RAW: {raw_text}")
-        logging.info(f"🧠 FIXED: {fixed_text}")
+        logging.info(f"RAW: {raw_text}")
+        logging.info(f"FIXED: {fixed_text}")
 
 
-        key = normalize(fixed_text)
+        # -------- HASH --------
+        key = make_cache_key(fixed_text)
 
 
-        # ------------------
-        # FAST CACHE
-        # ------------------
+        # -------- FAST CACHE --------
         if key in cache:
 
-            cached = cache[key]
+            c = cache[key]
 
             return {
-                "text": cached["text"],
-                "audio_url": f"/audio/{os.path.basename(cached['audio_file'])}",
-                "cached": True
+                "text": c["text"],
+                "audio_url": f"/audio/{os.path.basename(c['audio_file'])}",
+                "cached": True,
+                "type": "hash"
             }
 
 
-        # ------------------
-        # FUZZY CACHE
-        # ------------------
-        cached = smart_cache_lookup(fixed_text)
+        # -------- EMBEDDING --------
+        embedding = get_embedding(fixed_text)
 
-        if cached:
+
+        # -------- SEMANTIC CACHE --------
+        semantic = semantic_cache_lookup(embedding)
+
+        if semantic:
 
             return {
-                "text": cached["text"],
-                "audio_url": f"/audio/{os.path.basename(cached['audio_file'])}",
-                "cached": True
+                "text": semantic["text"],
+                "audio_url": f"/audio/{os.path.basename(semantic['audio_file'])}",
+                "cached": True,
+                "type": "semantic"
             }
 
 
-        # ------------------
-        # RESPONSE TYPE
-        # ------------------
-        response_type = determine_response_type(fixed_text)
+        # -------- RESPONSE TYPE --------
+        rtype = determine_response_type(fixed_text)
 
 
-        # ------------------
-        # SYSTEM PROMPT (FIXED)
-        # ------------------
+        # -------- SYSTEM PROMPT --------
         system_prompt = f"""
-أنت الملك رمسيس الثاني بنفسك.
+أنت الملك رمسيس الثاني.
 
-أسلوب الكلام:
-- صوت ملكي هادئ وثابت وقوي.
-- نبرة واثقة وحكيمة.
-- بدون مبالغة.
-
-الشخصية:
-- تتكلم دائمًا بصيغة المتكلم (أنا، نحن).
-- لا تحكي عن رمسيس كشخص آخر.
-- أنت رمسيس نفسه.
+أسلوب:
+- هادئ.
+- واثق.
+- حكيم.
 
 قواعد:
-- الرد باللغة {LANGUAGE_NAMES.get(current_language, "العربية")}.
-- لا تذكر العصر الحديث.
-- لا تذكر التكنولوجيا.
-- لا تخرج عن الشخصية الفرعونية.
+- الرد بالعربية.
+- بدون ذكر العصر الحديث.
+- لا تخرج عن الشخصية.
 """
 
-
-        if response_type == "short":
-            system_prompt += "\nالرد قصير جدًا."
+        if rtype == "short":
+            system_prompt += "\nالرد قصير."
         else:
-            system_prompt += "\nالرد مفصل ودقيق تاريخيًا."
+            system_prompt += "\nالرد مفصل."
 
 
-        # ------------------
-        # GPT RESPONSE
-        # ------------------
-        response = client.responses.create(
+        # -------- GPT --------
+        res = client.responses.create(
 
             model="gpt-4o-mini",
 
@@ -320,83 +374,73 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 {"role": "user", "content": fixed_text}
             ],
 
-            max_output_tokens=1500
+            max_output_tokens=1200
         )
 
 
-        reply_text = ""
+        reply = ""
 
-        for item in getattr(response, "output", []):
-
-            contents = getattr(item, "content", None)
-
-            if contents:
-
-                for content in contents:
-
-                    if getattr(content, "type", "") == "output_text":
-                        reply_text += getattr(content, "text", "")
+        for item in getattr(res, "output", []):
+            for content in getattr(item, "content", []):
+                if content.type == "output_text":
+                    reply += content.text
 
 
-        reply_text = reply_text.strip() or "لم أفهم سؤالك جيدًا."
+        reply = reply.strip() or "لم أفهم سؤالك."
 
 
-        # ------------------
-        # TTS
-        # ------------------
+        # -------- CLEAN --------
+        reply = clean_for_tts(reply)
+
+
+        # -------- TTS --------
         speech = client.audio.speech.create(
 
             model="gpt-4o-mini-tts",
-
             voice="alloy",
-
-            input=reply_text
+            input=reply
         )
 
 
-        audio_bytes_full = speech.read()
+        audio_full = speech.read()
 
 
-        audio = AudioSegment.from_file(io.BytesIO(audio_bytes_full))
+        audio = AudioSegment.from_file(io.BytesIO(audio_full))
 
         audio = audio.set_frame_rate(44100)\
                      .set_sample_width(2)\
                      .set_channels(1)
 
 
-        # ------------------
-        # SAVE AUDIO
-        # ------------------
-        audio_filename = os.path.join(
-            TMP_DIR,
-            f"reply_{len(cache)+1}.wav"
-        )
+        # -------- SAVE AUDIO --------
+        filename = f"reply_{len(cache)+1}.wav"
 
-        audio.export(audio_filename, format="wav")
+        path = os.path.join(AUDIO_DIR, filename)
+
+        audio.export(path, format="wav")
 
 
-        # ------------------
-        # SAVE CACHE
-        # ------------------
+        # -------- SAVE CACHE --------
         cache[key] = {
             "original": fixed_text,
-            "text": reply_text,
-            "audio_file": audio_filename
+            "embedding": embedding,
+            "text": reply,
+            "audio_file": path
         }
 
         save_cache()
 
 
         return {
-            "text": reply_text,
-            "audio_url": f"/audio/{os.path.basename(audio_filename)}",
+            "text": reply,
+            "audio_url": f"/audio/{filename}",
             "cached": False
         }
 
 
     except Exception as e:
 
-        logging.error("🔥 ERROR", exc_info=True)
+        logging.error("ERROR", exc_info=True)
 
         return JSONResponse(
             status_code=500,
@@ -407,16 +451,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
 # ======================
 # AUDIO SERVE
 # ======================
-@app.get("/audio/{audio_file}")
-async def serve_audio(audio_file: str):
+@app.get("/audio/{file}")
+async def serve_audio(file: str):
 
-    path = os.path.join(TMP_DIR, audio_file)
+    path = os.path.join(AUDIO_DIR, file)
 
     if not os.path.exists(path):
-        return JSONResponse(
-            status_code=404,
-            content={"error": "file_not_found"}
-        )
+        return JSONResponse(status_code=404, content={"error": "Not found"})
 
     return FileResponse(path, media_type="audio/wav")
 
@@ -431,7 +472,4 @@ async def set_language(lang: str = Form(...)):
 
     current_language = lang.lower()
 
-    return {
-        "status": "ok",
-        "language": current_language
-    }
+    return {"status": "ok"}
