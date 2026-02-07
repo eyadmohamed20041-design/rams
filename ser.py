@@ -26,9 +26,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====================== REDIS ======================
 r = redis.Redis(
-    host=os.getenv("REDIS_HOST"),
-    port=os.getenv("REDIS_PORT"),
-    password=os.getenv("REDIS_PASSWORD"),
+    host=os.getenv("REDISHOST"),
+    port=os.getenv("REDISPORT"),
+    password=os.getenv("REDISPASSWORD"),
     decode_responses=True
 )
 
@@ -244,3 +244,4 @@ async def serve_audio(file: str):
 @app.post("/set_language")
 async def set_language(lang: str = Form(...)):
     return {"status": "ok"}
+
