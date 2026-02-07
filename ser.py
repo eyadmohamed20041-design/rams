@@ -165,6 +165,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = "speech.wav"
 
+        # -------- TRANSCRIPTION --------
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
@@ -174,9 +175,8 @@ async def ask(request: Request, file: UploadFile = File(...)):
         if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech"})
 
+        # -------- FAST CACHE USING RAW TEXT --------
         raw_key = make_cache_key(raw_text)
-
-        # -------- FAST CACHE (REDIS) --------
         cached_data = r.get(raw_key)
         if cached_data:
             c = json.loads(cached_data)
@@ -187,15 +187,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 "type": "hash"
             }
 
-        # -------- FIX TEXT --------
+        # -------- FIX TEXT FOR GPT --------
         fixed_text = smart_correct_text(raw_text)
         logging.info(f"RAW: {raw_text}")
         logging.info(f"FIXED: {fixed_text}")
 
-        # -------- EMBEDDING --------
+        # -------- EMBEDDING FOR SEMANTIC CACHE --------
         embedding = get_embedding(fixed_text)
-
-        # -------- SEMANTIC CACHE --------
         semantic = semantic_cache_lookup(embedding)
         if semantic:
             return {
@@ -228,7 +226,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         else:
             system_prompt += "\nالرد مفصل."
 
-        # -------- GPT --------
+        # -------- GPT RESPONSE --------
         res = client.responses.create(
             model="gpt-4o-mini",
             input=[
@@ -246,7 +244,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply = reply.strip() or "لم أفهم سؤالك."
         reply = clean_for_tts(reply)
 
-        # -------- TTS (CACHE USING raw_key) --------
+        # -------- TTS (CACHE USING RAW KEY) --------
         filename = f"{raw_key}.wav"
         path = os.path.join(AUDIO_DIR, filename)
         if not os.path.exists(path):
@@ -260,9 +258,9 @@ async def ask(request: Request, file: UploadFile = File(...)):
             audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
             audio.export(path, format="wav")
 
-        # -------- SAVE CACHE TO REDIS --------
+        # -------- SAVE CACHE TO REDIS USING RAW TEXT --------
         cache_item = {
-            "original": fixed_text,
+            "original": raw_text,   # <-- حفظ النص الأصلي للكاش السريع
             "embedding": embedding,
             "text": reply,
             "audio_file": path
@@ -293,4 +291,3 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok"}
-
