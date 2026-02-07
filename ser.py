@@ -24,7 +24,7 @@ API_SECRET = os.getenv("API_SECRET", "SECRET123")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====================== REDIS SETUP ======================
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://default:lcZQPxbXVybMKLYimOAAHKSFuorvDtWt@metro.proxy.rlwy.net:20285")
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
 # ====================== SERVER SETUP ======================
@@ -293,3 +293,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok"}
+
