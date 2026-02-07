@@ -14,7 +14,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydub import AudioSegment
 from openai import OpenAI
 
-
 # ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
 
@@ -25,12 +24,18 @@ API_SECRET = os.getenv("API_SECRET", "SECRET123")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====================== REDIS ======================
-r = redis.Redis(
-    host=os.getenv("REDISHOST"),
-    port=os.getenv("REDISPORT"),
-    password=os.getenv("REDISPASSWORD"),
-    decode_responses=True
-)
+try:
+    r = redis.Redis(
+        host=os.getenv("REDISHOST", "localhost"),
+        port=int(os.getenv("REDISPORT", 6379)),
+        password=os.getenv("REDISPASSWORD", None),
+        decode_responses=True
+    )
+    r.ping()
+    logging.info("Redis connected successfully")
+except Exception as e:
+    logging.error(f"Redis connection failed: {e}")
+    r = None  # لو فشل الاتصال
 
 # ====================== SERVER ======================
 app = FastAPI()
@@ -67,7 +72,6 @@ def make_cache_key(text):
 
 # ====================== CANONICAL QUESTION ======================
 def canonicalize_question(text):
-
     prompt = f"""
 حوّل السؤال التالي إلى صيغة عربية فصحى موحدة قصيرة.
 احذف الحشو.
@@ -77,7 +81,6 @@ def canonicalize_question(text):
 السؤال:
 {text}
 """
-
     res = client.responses.create(
         model="gpt-4o-mini",
         input=prompt,
@@ -85,7 +88,6 @@ def canonicalize_question(text):
     )
 
     out = ""
-
     for item in getattr(res, "output", []):
         for content in getattr(item, "content", []):
             if content.type == "output_text":
@@ -103,8 +105,10 @@ MIN_INTERVAL = 2
 
 # ====================== ASK ======================
 @app.post("/ask")
-async def ask(request: Request, file: UploadFile = File(...)):
-
+async def ask(request: Request, file: UploadFile = File(...), lang: str = Form("ar")):
+    """
+    param lang: "ar" للعربية، "en" للإنجليزي، "zh" للصيني، إلخ
+    """
     global last_request_time
 
     if request.headers.get("x-api-key") != API_SECRET:
@@ -117,7 +121,6 @@ async def ask(request: Request, file: UploadFile = File(...)):
     last_request_time = now
 
     try:
-
         audio_bytes = await file.read()
 
         if len(audio_bytes) < 2000:
@@ -137,12 +140,17 @@ async def ask(request: Request, file: UploadFile = File(...)):
         if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech"})
 
-        # ========== CANONICAL ==========
-        canonical = canonicalize_question(raw_text)
+        # ================== CANONICAL BASED ON LANGUAGE ==================
+        if lang.lower() == "ar":
+            canonical = canonicalize_question(raw_text)
+        else:
+            canonical = raw_text
 
         key = make_cache_key(canonical)
 
-        cached = r.get(key)
+        cached = None
+        if r:
+            cached = r.get(key)
 
         if cached:
             c = json.loads(cached)
@@ -152,7 +160,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 "cached": True
             }
 
-        # ========== SYSTEM PROMPT ==========
+        # ================== SYSTEM PROMPT ==================
         system_prompt = """
 أنت الملك رمسيس الثاني، أحد أعظم ملوك مصر القديمة.
 
@@ -177,7 +185,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 - لغة واضحة مناسبة للنطق الصوتي.
 """
 
-        # ========== GPT ANSWER ==========
+        # ================== GPT ANSWER ==================
         res = client.responses.create(
             model="gpt-4o-mini",
             input=[
@@ -188,7 +196,6 @@ async def ask(request: Request, file: UploadFile = File(...)):
         )
 
         reply = ""
-
         for item in getattr(res, "output", []):
             for content in getattr(item, "content", []):
                 if content.type == "output_text":
@@ -196,7 +203,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
         reply = clean_for_tts(reply.strip() or "لم أفهم سؤالك")
 
-        # ========== TTS ==========
+        # ================== TTS ==================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
@@ -210,14 +217,14 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
         filename = f"reply_{int(time.time())}.wav"
         path = os.path.join(AUDIO_DIR, filename)
-
         audio.export(path, format="wav")
 
-        # ========== SAVE REDIS ==========
-        r.setex(key, 86400, json.dumps({
-            "text": reply,
-            "audio_file": path
-        }))
+        # ================== SAVE REDIS ==================
+        if r:
+            r.setex(key, 86400, json.dumps({
+                "text": reply,
+                "audio_file": path
+            }))
 
         return {
             "text": reply,
@@ -232,16 +239,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
 # ====================== AUDIO ======================
 @app.get("/audio/{file}")
 async def serve_audio(file: str):
-
     path = os.path.join(AUDIO_DIR, file)
-
     if not os.path.exists(path):
         return JSONResponse(status_code=404, content={"error": "Not found"})
-
     return FileResponse(path, media_type="audio/wav")
 
 # ====================== LANGUAGE ======================
 @app.post("/set_language")
 async def set_language(lang: str = Form(...)):
     return {"status": "ok"}
-
