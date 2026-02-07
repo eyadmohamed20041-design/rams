@@ -101,7 +101,8 @@ def semantic_cache_lookup(new_emb, threshold=0.80):
 
 # ====================== FIX TEXT ======================
 def smart_correct_text(text: str):
-    prompt = f"""
+    if current_language == "ar":
+        prompt = f"""
 النص التالي ناتج من تحويل صوت إلى نص.
 المطلوب:
 - تصحيح الأخطاء.
@@ -112,17 +113,20 @@ def smart_correct_text(text: str):
 النص:
 {text}
 """
-    res = client.responses.create(
-        model="gpt-4o-mini",
-        input=prompt,
-        max_output_tokens=150
-    )
-    fixed = ""
-    for item in getattr(res, "output", []):
-        for content in getattr(item, "content", []):
-            if content.type == "output_text":
-                fixed += content.text
-    return fixed.strip() or text
+        res = client.responses.create(
+            model="gpt-4o-mini",
+            input=prompt,
+            max_output_tokens=150
+        )
+        fixed = ""
+        for item in getattr(res, "output", []):
+            for content in getattr(item, "content", []):
+                if content.type == "output_text":
+                    fixed += content.text
+        return fixed.strip() or text
+    else:
+       
+        return text
 
 # ====================== CLEAN TTS ======================
 def clean_for_tts(text):
@@ -216,7 +220,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
 - لا تخرج عن شخصيتك التاريخية.
 
 القواعد:
-- الرد بالعربية الفصحى.
+- الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
 - إذا سُئلت عن أشياء لم تكن موجودة في عصر مصر القديمة، أجب بطريقة مناسبة مثل: "في عصرنا لم يكن هذا موجودًا، ولكن…".
 - استخدم أمثلة وتفاصيل تاريخية دقيقة من عهد مصر القديمة.
 """
