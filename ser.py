@@ -175,11 +175,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
         if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech"})
 
-        # -------- FAST CACHE USING RAW TEXT --------
+        # -------- FAST CACHE (RAW TEXT) --------
         raw_key = make_cache_key(raw_text)
         cached_data = r.get(raw_key)
         if cached_data:
             c = json.loads(cached_data)
+            logging.info("Returning from cache")
             return {
                 "text": c["text"],
                 "audio_url": f"/audio/{os.path.basename(c['audio_file'])}",
@@ -187,15 +188,18 @@ async def ask(request: Request, file: UploadFile = File(...)):
                 "type": "hash"
             }
 
-        # -------- FIX TEXT FOR GPT --------
+        # -------- FIX TEXT --------
         fixed_text = smart_correct_text(raw_text)
         logging.info(f"RAW: {raw_text}")
         logging.info(f"FIXED: {fixed_text}")
 
-        # -------- EMBEDDING FOR SEMANTIC CACHE --------
+        # -------- EMBEDDING --------
         embedding = get_embedding(fixed_text)
+
+        # -------- SEMANTIC CACHE --------
         semantic = semantic_cache_lookup(embedding)
         if semantic:
+            logging.info("Returning from semantic cache")
             return {
                 "text": semantic["text"],
                 "audio_url": f"/audio/{os.path.basename(semantic['audio_file'])}",
@@ -244,7 +248,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply = reply.strip() or "لم أفهم سؤالك."
         reply = clean_for_tts(reply)
 
-        # -------- TTS (CACHE USING RAW KEY) --------
+        # -------- TTS --------
         filename = f"{raw_key}.wav"
         path = os.path.join(AUDIO_DIR, filename)
         if not os.path.exists(path):
@@ -258,9 +262,13 @@ async def ask(request: Request, file: UploadFile = File(...)):
             audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
             audio.export(path, format="wav")
 
-        # -------- SAVE CACHE TO REDIS USING RAW TEXT --------
+            # تأكيد وجود الملف
+            while not os.path.exists(path):
+                time.sleep(0.05)
+
+        # -------- SAVE CACHE TO REDIS --------
         cache_item = {
-            "original": raw_text,   # <-- حفظ النص الأصلي للكاش السريع
+            "original": raw_text,  # حفظ النص الأصلي للكاش السريع
             "embedding": embedding,
             "text": reply,
             "audio_file": path
