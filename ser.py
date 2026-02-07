@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from pydub import AudioSegment
 from openai import OpenAI
+import redis
 
 # ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,10 @@ logging.basicConfig(level=logging.INFO)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_SECRET = os.getenv("API_SECRET", "SECRET123")
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# ====================== REDIS SETUP ======================
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+r = redis.from_url(REDIS_URL, decode_responses=True)
 
 # ====================== SERVER SETUP ======================
 app = FastAPI()
@@ -44,19 +49,8 @@ LANGUAGE_NAMES = {"ar": "العربية", "en": "English", "de": "Deutsch", "zh"
 # ====================== STORAGE ======================
 DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
-CACHE_FILE = os.path.join(DATA_DIR, "cache.json")
 AUDIO_DIR = os.path.join(DATA_DIR, "audio")
 os.makedirs(AUDIO_DIR, exist_ok=True)
-
-# ====================== LOAD CACHE ======================
-cache = {}
-if os.path.exists(CACHE_FILE):
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        cache = json.load(f)
-
-def save_cache():
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
 
 # ====================== TEXT NORMALIZE ======================
 def normalize(text: str):
@@ -87,7 +81,11 @@ def cosine_similarity(a, b):
 def semantic_cache_lookup(new_emb, threshold=0.80):
     best = None
     best_score = 0
-    for item in cache.values():
+    for key in r.keys():
+        item_json = r.get(key)
+        if not item_json:
+            continue
+        item = json.loads(item_json)
         old_emb = item.get("embedding")
         if not old_emb:
             continue
@@ -125,7 +123,6 @@ def smart_correct_text(text: str):
                     fixed += content.text
         return fixed.strip() or text
     else:
-       
         return text
 
 # ====================== CLEAN TTS ======================
@@ -136,7 +133,8 @@ def clean_for_tts(text):
 
 # ====================== RESPONSE TYPE ======================
 def determine_response_type(text):
-    greetings = ["ازيك", "عامل اي", "اخبارك", "hello", "hi"]
+    greetings = ["ازيك", "عامل اي", "اخبارك", "hello", "hi", "hallo", "hi there", "guten tag", "你好", "您好", "嗨", "guten morgen", "guten nacht"]
+
     for g in greetings:
         if g in text.lower():
             return "short"
@@ -178,9 +176,10 @@ async def ask(request: Request, file: UploadFile = File(...)):
 
         raw_key = make_cache_key(raw_text)
 
-        # -------- FAST CACHE --------
-        if raw_key in cache:
-            c = cache[raw_key]
+        # -------- FAST CACHE (REDIS) --------
+        cached_data = r.get(raw_key)
+        if cached_data:
+            c = json.loads(cached_data)
             return {
                 "text": c["text"],
                 "audio_url": f"/audio/{os.path.basename(c['audio_file'])}",
@@ -247,28 +246,28 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply = reply.strip() or "لم أفهم سؤالك."
         reply = clean_for_tts(reply)
 
-        # -------- TTS --------
-        speech = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=reply
-        )
-        audio_full = speech.read()
-        audio = AudioSegment.from_file(io.BytesIO(audio_full))
-        audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
-
-        filename = f"reply_{len(cache)+1}.wav"
+        # -------- TTS (CACHE USING raw_key) --------
+        filename = f"{raw_key}.wav"
         path = os.path.join(AUDIO_DIR, filename)
-        audio.export(path, format="wav")
+        if not os.path.exists(path):
+            speech = client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice="alloy",
+                input=reply
+            )
+            audio_full = speech.read()
+            audio = AudioSegment.from_file(io.BytesIO(audio_full))
+            audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
+            audio.export(path, format="wav")
 
-        # -------- SAVE CACHE --------
-        cache[raw_key] = {
+        # -------- SAVE CACHE TO REDIS --------
+        cache_item = {
             "original": fixed_text,
             "embedding": embedding,
             "text": reply,
             "audio_file": path
         }
-        save_cache()
+        r.set(raw_key, json.dumps(cache_item))
 
         return {
             "text": reply,
