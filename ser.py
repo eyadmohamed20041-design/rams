@@ -1,4 +1,3 @@
-
 import os
 import io
 import json
@@ -10,13 +9,11 @@ import hashlib
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from pydub import AudioSegment
 from openai import OpenAI
 import redis
-import cloudinary
-import cloudinary.uploader
 
 # ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
@@ -25,13 +22,6 @@ logging.basicConfig(level=logging.INFO)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_SECRET = os.getenv("API_SECRET", "SECRET123")
 client = OpenAI(api_key=OPENAI_API_KEY)
-
-# ====================== CLOUDINARY SETUP ======================
-cloudinary.config(
-    cloud_name=os.getenv("CLOUD_NAME"),
-    api_key=os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET")
-)
 
 # ====================== REDIS SETUP ======================
 REDIS_URL = os.getenv("REDIS_URL", "redis://default:lcZQPxbXVybMKLYimOAAHKSFuorvDtWt@metro.proxy.rlwy.net:20285")
@@ -55,6 +45,12 @@ def root():
 # ====================== LANGUAGE ======================
 current_language = "ar"
 LANGUAGE_NAMES = {"ar": "العربية", "en": "English", "de": "Deutsch", "zh": "中文"}
+
+# ====================== STORAGE ======================
+DATA_DIR = "./data"
+os.makedirs(DATA_DIR, exist_ok=True)
+AUDIO_DIR = os.path.join(DATA_DIR, "audio")
+os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # ====================== TEXT NORMALIZE ======================
 def normalize(text: str):
@@ -138,6 +134,7 @@ def clean_for_tts(text):
 # ====================== RESPONSE TYPE ======================
 def determine_response_type(text):
     greetings = ["ازيك", "عامل اي", "اخبارك", "hello", "hi", "hallo", "hi there", "guten tag", "你好", "您好", "嗨", "guten morgen", "guten nacht"]
+
     for g in greetings:
         if g in text.lower():
             return "short"
@@ -146,16 +143,6 @@ def determine_response_type(text):
 # ====================== RATE LIMIT ======================
 last_request_time = 0
 MIN_INTERVAL = 2
-
-# ====================== CLOUDINARY UPLOAD ======================
-def upload_audio_to_cloudinary(audio_bytes, public_id):
-    result = cloudinary.uploader.upload(
-        io.BytesIO(audio_bytes),
-        resource_type="video",
-        public_id=public_id,
-        overwrite=True
-    )
-    return result["secure_url"]
 
 # ====================== MAIN ENDPOINT ======================
 @app.post("/ask")
@@ -196,7 +183,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
             logging.info("Returning from cache")
             return {
                 "text": c["text"],
-                "audio_url": c["audio_url"],
+                "audio_url": f"/audio/{os.path.basename(c['audio_file'])}",
                 "cached": True,
                 "type": "hash"
             }
@@ -215,7 +202,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
             logging.info("Returning from semantic cache")
             return {
                 "text": semantic["text"],
-                "audio_url": semantic["audio_url"],
+                "audio_url": f"/audio/{os.path.basename(semantic['audio_file'])}",
                 "cached": True,
                 "type": "semantic"
             }
@@ -262,39 +249,49 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply = clean_for_tts(reply)
 
         # -------- TTS --------
-        speech = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=reply
-        )
-        audio_full = speech.read()
-        audio_segment = AudioSegment.from_file(io.BytesIO(audio_full))
-        audio_segment = audio_segment.set_frame_rate(44100).set_sample_width(2).set_channels(1)
+        filename = f"{raw_key}.wav"
+        path = os.path.join(AUDIO_DIR, filename)
+        if not os.path.exists(path):
+            speech = client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice="alloy",
+                input=reply
+            )
+            audio_full = speech.read()
+            audio = AudioSegment.from_file(io.BytesIO(audio_full))
+            audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
+            audio.export(path, format="wav")
 
-        # upload to Cloudinary
-        buffer = io.BytesIO()
-        audio_segment.export(buffer, format="wav")
-        buffer.seek(0)
-        audio_url = upload_audio_to_cloudinary(buffer.read(), raw_key)
+            # تأكيد وجود الملف
+            while not os.path.exists(path):
+                time.sleep(0.05)
 
         # -------- SAVE CACHE TO REDIS --------
         cache_item = {
-            "original": raw_text,
+            "original": raw_text,  # حفظ النص الأصلي للكاش السريع
             "embedding": embedding,
             "text": reply,
-            "audio_url": audio_url
+            "audio_file": path
         }
         r.set(raw_key, json.dumps(cache_item))
 
         return {
             "text": reply,
-            "audio_url": audio_url,
+            "audio_url": f"/audio/{filename}",
             "cached": False
         }
 
     except Exception as e:
         logging.error("ERROR", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# ====================== AUDIO SERVE ======================
+@app.get("/audio/{file}")
+async def serve_audio(file: str):
+    path = os.path.join(AUDIO_DIR, file)
+    if not os.path.exists(path):
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    return FileResponse(path, media_type="audio/wav")
 
 # ====================== LANGUAGE ======================
 @app.post("/set_language")
