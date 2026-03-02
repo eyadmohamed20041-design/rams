@@ -22,21 +22,25 @@ logging.basicConfig(level=logging.INFO)
 
 # ====================== API KEYS ======================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-API_SECRET = os.getenv("API_SECRET", "SECRET123")
+SERVER_API_SECRET = os.getenv("SERVER_API_SECRET", "SECRET123")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ====================== CLOUDINARY SETUP ======================
+# ====================== CLOUDINARY ======================
 cloudinary.config(
     cloud_name=os.getenv("CLOUD_NAME"),
-    api_key=os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET")
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
-# ====================== REDIS SETUP ======================
-REDIS_URL = os.getenv("REDIS_URL", "redis://default:lcZQPxbXVybMKLYimOAAHKSFuorvDtWt@metro.proxy.rlwy.net:20285")
+# ====================== REDIS ======================
+REDIS_URL = os.getenv("REDIS_URL")
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
-# ====================== SERVER SETUP ======================
+CACHE_VERSION = "v2"
+CACHE_TTL = 60 * 60 * 24  # 24 hours
+
+# ====================== FASTAPI ======================
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +50,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================== ROOT ======================
 @app.get("/")
 def root():
     return {"status": "running"}
@@ -55,7 +58,7 @@ def root():
 current_language = "ar"
 LANGUAGE_NAMES = {"ar": "العربية", "en": "English", "de": "Deutsch", "zh": "中文"}
 
-# ====================== TEXT NORMALIZE ======================
+# ====================== UTIL ======================
 def normalize(text: str):
     text = text.lower().strip()
     tashkeel = re.compile(r'[\u0617-\u061A\u064B-\u0652]')
@@ -64,89 +67,52 @@ def normalize(text: str):
     text = re.sub(r'\s+', ' ', text)
     return text
 
-# ====================== HASH KEY ======================
 def make_cache_key(text):
-    return hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()
+    base = hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()
+    return f"{CACHE_VERSION}:{base}"
 
-# ====================== EMBEDDING ======================
 def get_embedding(text):
     res = client.embeddings.create(model="text-embedding-3-small", input=text)
     return res.data[0].embedding
 
-# ====================== COSINE SIMILARITY ======================
 def cosine_similarity(a, b):
     dot = sum(x*y for x, y in zip(a, b))
     na = math.sqrt(sum(x*x for x in a))
     nb = math.sqrt(sum(x*x for x in b))
     return dot / (na * nb)
 
-# ====================== SEMANTIC CACHE ======================
 def semantic_cache_lookup(new_emb, threshold=0.80):
     best = None
     best_score = 0
-    for key in r.keys():
+
+    for key in r.scan_iter(match=f"{CACHE_VERSION}:*"):
         item_json = r.get(key)
         if not item_json:
             continue
+
         item = json.loads(item_json)
         old_emb = item.get("embedding")
         if not old_emb:
             continue
+
         score = cosine_similarity(new_emb, old_emb)
+
         if score > best_score:
             best_score = score
             best = item
+
     if best_score >= threshold:
         return best
+
     return None
 
-# ====================== FIX TEXT ======================
-def smart_correct_text(text: str):
-    if current_language == "ar":
-        prompt = f"""
-النص التالي ناتج من تحويل صوت إلى نص.
-المطلوب:
-- تصحيح الأخطاء.
-- إعادة الصياغة بالعربية الفصحى.
-- بدون تشكيل.
-- بدون رموز.
-- مناسب للنطق.
-النص:
-{text}
-"""
-        res = client.responses.create(
-            model="gpt-4o-mini",
-            input=prompt,
-            max_output_tokens=150
-        )
-        fixed = ""
-        for item in getattr(res, "output", []):
-            for content in getattr(item, "content", []):
-                if content.type == "output_text":
-                    fixed += content.text
-        return fixed.strip() or text
-    else:
-        return text
-
-# ====================== CLEAN TTS ======================
+# ====================== TTS CLEAN ======================
 def clean_for_tts(text):
     text = normalize(text)
     text = text.replace("ـ", "")
     return text
 
-# ====================== RESPONSE TYPE ======================
-def determine_response_type(text):
-    greetings = ["ازيك", "عامل اي", "اخبارك", "hello", "hi", "hallo", "hi there", "guten tag", "你好", "您好", "嗨", "guten morgen", "guten nacht"]
-    for g in greetings:
-        if g in text.lower():
-            return "short"
-    return "normal"
-
-# ====================== RATE LIMIT ======================
-last_request_time = 0
-MIN_INTERVAL = 2
-
-# ====================== CLOUDINARY UPLOAD ======================
+# ====================== UPLOAD ======================
 def upload_audio_to_cloudinary(audio_bytes, public_id):
     result = cloudinary.uploader.upload(
         io.BytesIO(audio_bytes),
@@ -156,21 +122,15 @@ def upload_audio_to_cloudinary(audio_bytes, public_id):
     )
     return result["secure_url"]
 
-# ====================== MAIN ENDPOINT ======================
+# ====================== MAIN ======================
 @app.post("/ask")
 async def ask(request: Request, file: UploadFile = File(...)):
-    global last_request_time
-
-    if request.headers.get("x-api-key") != API_SECRET:
-        return JSONResponse(status_code=403, content={"error": "Forbidden"})
-
-    now = time.time()
-    if now - last_request_time < MIN_INTERVAL:
-        return JSONResponse(status_code=429, content={"error": "Too many requests"})
-    last_request_time = now
-
     try:
+        if request.headers.get("x-api-key") != SERVER_API_SECRET:
+            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
         audio_bytes = await file.read()
+
         if len(audio_bytes) < 2000:
             return JSONResponse(status_code=400, content={"error": "Audio too small"})
 
@@ -183,73 +143,38 @@ async def ask(request: Request, file: UploadFile = File(...)):
             file=audio_file,
             response_format="text"
         )
+
         raw_text = transcript.strip()
         if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech"})
 
-        # -------- FAST CACHE (RAW TEXT) --------
         raw_key = make_cache_key(raw_text)
+
+        # -------- HASH CACHE --------
         cached_data = r.get(raw_key)
         if cached_data:
             c = json.loads(cached_data)
-            logging.info("Returning from cache")
-            return {
-                "text": c["text"],
-                "audio_url": c["audio_url"],
-                "cached": True,
-                "type": "hash"
-            }
 
-        # -------- FIX TEXT --------
-        fixed_text = smart_correct_text(raw_text)
-        logging.info(f"RAW: {raw_text}")
-        logging.info(f"FIXED: {fixed_text}")
+            audio_url = c.get("audio_url")
+            text = c.get("text")
 
-        # -------- EMBEDDING --------
-        embedding = get_embedding(fixed_text)
+            if audio_url and text:
+                logging.info("Returning from HASH cache")
+                return {
+                    "text": text,
+                    "audio_url": audio_url,
+                    "cached": True,
+                    "type": "hash"
+                }
+            else:
+                logging.warning("Old invalid cache entry deleted")
+                r.delete(raw_key)
 
-        # -------- SEMANTIC CACHE --------
-        semantic = semantic_cache_lookup(embedding)
-        if semantic:
-            logging.info("Returning from semantic cache")
-            return {
-                "text": semantic["text"],
-                "audio_url": semantic["audio_url"],
-                "cached": True,
-                "type": "semantic"
-            }
-
-        # -------- RESPONSE TYPE --------
-        rtype = determine_response_type(fixed_text)
-
-        # -------- SYSTEM PROMPT --------
-        system_prompt = f"""
-أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
-
-أسلوب:
-- هادئ وواثق.
-- حكيم وصادق.
-- لا تتحدث عن كونك ذكاء اصطناعي أو أي شيء من العصر الحديث.
-- لا تخرج عن شخصيتك التاريخية.
-
-القواعد:
-- الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
-- إذا سُئلت عن أشياء لم تكن موجودة في عصر مصر القديمة، أجب بطريقة مناسبة مثل: "في عصرنا لم يكن هذا موجودًا، ولكن…".
-- استخدم أمثلة وتفاصيل تاريخية دقيقة من عهد مصر القديمة.
-"""
-        if rtype == "short":
-            system_prompt += "\nالرد قصير."
-        else:
-            system_prompt += "\nالرد مفصل."
-
-        # -------- GPT RESPONSE --------
+        # -------- GPT --------
         res = client.responses.create(
             model="gpt-4o-mini",
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": fixed_text}
-            ],
-            max_output_tokens=1200
+            input=raw_text,
+            max_output_tokens=1000
         )
 
         reply = ""
@@ -257,33 +182,53 @@ async def ask(request: Request, file: UploadFile = File(...)):
             for content in getattr(item, "content", []):
                 if content.type == "output_text":
                     reply += content.text
+
         reply = reply.strip() or "لم أفهم سؤالك."
-        reply = clean_for_tts(reply)
+
+        # -------- EMBEDDING --------
+        embedding = get_embedding(reply)
+
+        # -------- SEMANTIC CACHE --------
+        semantic = semantic_cache_lookup(embedding)
+        if semantic:
+            audio_url = semantic.get("audio_url")
+            text = semantic.get("text")
+
+            if audio_url and text:
+                logging.info("Returning from SEMANTIC cache")
+                return {
+                    "text": text,
+                    "audio_url": audio_url,
+                    "cached": True,
+                    "type": "semantic"
+                }
 
         # -------- TTS --------
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=reply
+            input=clean_for_tts(reply)
         )
+
         audio_full = speech.read()
+
         audio_segment = AudioSegment.from_file(io.BytesIO(audio_full))
         audio_segment = audio_segment.set_frame_rate(44100).set_sample_width(2).set_channels(1)
 
-        # upload to Cloudinary
         buffer = io.BytesIO()
         audio_segment.export(buffer, format="wav")
         buffer.seek(0)
+
         audio_url = upload_audio_to_cloudinary(buffer.read(), raw_key)
 
-        # -------- SAVE CACHE TO REDIS --------
+        # -------- SAVE CACHE --------
         cache_item = {
-            "original": raw_text,
-            "embedding": embedding,
             "text": reply,
-            "audio_url": audio_url
+            "audio_url": audio_url,
+            "embedding": embedding
         }
-        r.set(raw_key, json.dumps(cache_item))
+
+        r.setex(raw_key, CACHE_TTL, json.dumps(cache_item))
 
         return {
             "text": reply,
