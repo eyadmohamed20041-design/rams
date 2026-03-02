@@ -299,3 +299,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok"}
+
