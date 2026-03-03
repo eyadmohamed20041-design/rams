@@ -268,7 +268,8 @@ async def ask(request: Request, file: UploadFile = File(...)):
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=reply
+            input=reply,
+            format="wav"
         )
 
         audio_output = speech.read()
@@ -310,3 +311,4 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok"}
+
