@@ -1,5 +1,5 @@
-import os
 import io
+import os
 import json
 import time
 import logging
@@ -9,7 +9,7 @@ import hashlib
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 from pydub import AudioSegment
 from openai import OpenAI
@@ -24,8 +24,10 @@ API_SECRET = os.getenv("API_SECRET", "SECRET123")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====================== REDIS SETUP ======================
-REDIS_URL = os.getenv("REDIS_URL", "redis://default:lcZQPxbXVybMKLYimOAAHKSFuorvDtWt@metro.proxy.rlwy.net:20285")
-r = redis.from_url(REDIS_URL, decode_responses=True)
+REDIS_URL = os.getenv("REDIS_URL")
+r = redis.from_url(REDIS_URL, decode_responses=False)  # important: store bytes
+
+CACHE_EXPIRE = 3600  # 1 hour
 
 # ====================== SERVER SETUP ======================
 app = FastAPI()
@@ -37,20 +39,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================== ROOT ======================
-@app.get("/")
-def root():
-    return {"status": "running"}
-
 # ====================== LANGUAGE ======================
 current_language = "ar"
 LANGUAGE_NAMES = {"ar": "العربية", "en": "English", "de": "Deutsch", "zh": "中文"}
-
-# ====================== STORAGE ======================
-DATA_DIR = "./data"
-os.makedirs(DATA_DIR, exist_ok=True)
-AUDIO_DIR = os.path.join(DATA_DIR, "audio")
-os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # ====================== TEXT NORMALIZE ======================
 def normalize(text: str):
@@ -174,15 +165,16 @@ async def ask(request: Request, file: UploadFile = File(...)):
         if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech"})
 
-        # -------- FAST CACHE (RAW TEXT) --------
         raw_key = make_cache_key(raw_text)
+
+        # -------- HASH CACHE --------
         cached_data = r.get(raw_key)
         if cached_data:
             c = json.loads(cached_data)
             logging.info("Returning from cache")
             return {
                 "text": c["text"],
-                "audio_url": f"/audio/{os.path.basename(c['audio_file'])}",
+                "audio_url": f"/audio/{raw_key}",
                 "cached": True,
                 "type": "hash"
             }
@@ -201,7 +193,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
             logging.info("Returning from semantic cache")
             return {
                 "text": semantic["text"],
-                "audio_url": f"/audio/{os.path.basename(semantic['audio_file'])}",
+                "audio_url": f"/audio/{semantic['key']}",
                 "cached": True,
                 "type": "semantic"
             }
@@ -247,38 +239,32 @@ async def ask(request: Request, file: UploadFile = File(...)):
         reply = clean_for_tts(reply)
 
         # -------- TTS WAV --------
-        filename = f"{raw_key}.wav"
-        path = os.path.join(AUDIO_DIR, filename)
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=reply
+        )
+        audio_full = speech.read()
 
-        if not os.path.exists(path):
-            speech = client.audio.speech.create(
-                model="gpt-4o-mini-tts",
-                voice="alloy",
-                input=reply
-            )
-            audio_full = speech.read()
+        # تحويل الصوت لـ WAV باستخدام pydub
+        audio = AudioSegment.from_file(io.BytesIO(audio_full))
+        audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
 
-            # تحويل الصوت باستخدام pydub وضبطه
-            audio = AudioSegment.from_file(io.BytesIO(audio_full))
-            audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
-            audio.export(path, format="wav")
-
-            # تأكيد وجود الملف
-            while not os.path.exists(path):
-                time.sleep(0.05)
+        # تخزين الصوت مباشرة في Redis
+        r.set(f"audio:{raw_key}", audio.export(format="wav").read(), ex=CACHE_EXPIRE)
 
         # -------- SAVE CACHE TO REDIS --------
         cache_item = {
             "original": raw_text,
             "embedding": embedding,
             "text": reply,
-            "audio_file": path
+            "key": raw_key
         }
-        r.set(raw_key, json.dumps(cache_item))
+        r.set(raw_key, json.dumps(cache_item), ex=CACHE_EXPIRE)
 
         return {
             "text": reply,
-            "audio_url": f"/audio/{filename}",
+            "audio_url": f"/audio/{raw_key}",
             "cached": False
         }
 
@@ -287,12 +273,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ====================== AUDIO SERVE ======================
-@app.get("/audio/{file}")
-async def serve_audio(file: str):
-    path = os.path.join(AUDIO_DIR, file)
-    if not os.path.exists(path):
+@app.get("/audio/{key}")
+async def serve_audio(key: str):
+    audio_data = r.get(f"audio:{key}")
+    if not audio_data:
         return JSONResponse(status_code=404, content={"error": "Not found"})
-    return FileResponse(path, media_type="audio/wav")
+    return Response(content=audio_data, media_type="audio/wav")
 
 # ====================== LANGUAGE ======================
 @app.post("/set_language")
