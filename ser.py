@@ -7,10 +7,11 @@ import re
 import math
 import hashlib
 
-from fastapi import FastAPI, UploadFile, File, Form, Request, Response
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
+from pydub import AudioSegment
 from openai import OpenAI
 import redis
 
@@ -23,9 +24,8 @@ API_SECRET = os.getenv("API_SECRET", "SECRET123")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====================== REDIS SETUP ======================
-REDIS_URL = os.getenv("REDIS_URL")
-r = redis.from_url(REDIS_URL)  # ⚠️ بدون decode_responses
-CACHE_EXPIRE = 3600  # ساعة
+REDIS_URL = os.getenv("REDIS_URL", "redis://default:lcZQPxbXVybMKLYimOAAHKSFuorvDtWt@metro.proxy.rlwy.net:20285")
+r = redis.from_url(REDIS_URL, decode_responses=True)
 
 # ====================== SERVER SETUP ======================
 app = FastAPI()
@@ -46,6 +46,12 @@ def root():
 current_language = "ar"
 LANGUAGE_NAMES = {"ar": "العربية", "en": "English", "de": "Deutsch", "zh": "中文"}
 
+# ====================== STORAGE ======================
+DATA_DIR = "./data"
+os.makedirs(DATA_DIR, exist_ok=True)
+AUDIO_DIR = os.path.join(DATA_DIR, "audio")
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
 # ====================== TEXT NORMALIZE ======================
 def normalize(text: str):
     text = text.lower().strip()
@@ -61,10 +67,7 @@ def make_cache_key(text):
 
 # ====================== EMBEDDING ======================
 def get_embedding(text):
-    res = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
+    res = client.embeddings.create(model="text-embedding-3-small", input=text)
     return res.data[0].embedding
 
 # ====================== COSINE SIMILARITY ======================
@@ -78,26 +81,20 @@ def cosine_similarity(a, b):
 def semantic_cache_lookup(new_emb, threshold=0.80):
     best = None
     best_score = 0
-
-    for key in r.scan_iter(match="meta:*"):
+    for key in r.keys():
         item_json = r.get(key)
         if not item_json:
             continue
-
-        item = json.loads(item_json.decode())
+        item = json.loads(item_json)
         old_emb = item.get("embedding")
         if not old_emb:
             continue
-
         score = cosine_similarity(new_emb, old_emb)
-
         if score > best_score:
             best_score = score
             best = item
-
     if best_score >= threshold:
         return best
-
     return None
 
 # ====================== FIX TEXT ======================
@@ -119,13 +116,11 @@ def smart_correct_text(text: str):
             input=prompt,
             max_output_tokens=150
         )
-
         fixed = ""
         for item in getattr(res, "output", []):
             for content in getattr(item, "content", []):
                 if content.type == "output_text":
                     fixed += content.text
-
         return fixed.strip() or text
     else:
         return text
@@ -138,17 +133,10 @@ def clean_for_tts(text):
 
 # ====================== RESPONSE TYPE ======================
 def determine_response_type(text):
-    greetings = [
-        "ازيك", "عامل اي", "اخبارك",
-        "hello", "hi", "hallo", "hi there",
-        "guten tag", "你好", "您好", "嗨",
-        "guten morgen", "guten nacht"
-    ]
-
+    greetings = ["ازيك", "عامل اي", "اخبارك", "hello", "hi", "hallo", "hi there", "guten tag", "你好", "您好", "嗨", "guten morgen", "guten nacht"]
     for g in greetings:
         if g in text.lower():
             return "short"
-
     return "normal"
 
 # ====================== RATE LIMIT ======================
@@ -182,22 +170,19 @@ async def ask(request: Request, file: UploadFile = File(...)):
             file=audio_file,
             response_format="text"
         )
-
         raw_text = transcript.strip()
         if not raw_text:
             return JSONResponse(status_code=400, content={"error": "No speech"})
 
+        # -------- FAST CACHE (RAW TEXT) --------
         raw_key = make_cache_key(raw_text)
-        meta_key = f"meta:{raw_key}"
-
-        # -------- HASH CACHE --------
-        cached_meta = r.get(meta_key)
-        if cached_meta:
-            cached_meta = json.loads(cached_meta.decode())
-            logging.info("Returning from HASH cache")
+        cached_data = r.get(raw_key)
+        if cached_data:
+            c = json.loads(cached_data)
+            logging.info("Returning from cache")
             return {
-                "text": cached_meta["text"],
-                "audio_url": f"/audio/{raw_key}",
+                "text": c["text"],
+                "audio_url": f"/audio/{os.path.basename(c['audio_file'])}",
                 "cached": True,
                 "type": "hash"
             }
@@ -213,10 +198,10 @@ async def ask(request: Request, file: UploadFile = File(...)):
         # -------- SEMANTIC CACHE --------
         semantic = semantic_cache_lookup(embedding)
         if semantic:
-            logging.info("Returning from SEMANTIC cache")
+            logging.info("Returning from semantic cache")
             return {
                 "text": semantic["text"],
-                "audio_url": f"/audio/{semantic['key']}",
+                "audio_url": f"/audio/{os.path.basename(semantic['audio_file'])}",
                 "cached": True,
                 "type": "semantic"
             }
@@ -239,7 +224,6 @@ async def ask(request: Request, file: UploadFile = File(...)):
 - إذا سُئلت عن أشياء لم تكن موجودة في عصر مصر القديمة، أجب بطريقة مناسبة مثل: "في عصرنا لم يكن هذا موجودًا، ولكن…".
 - استخدم أمثلة وتفاصيل تاريخية دقيقة من عهد مصر القديمة.
 """
-
         if rtype == "short":
             system_prompt += "\nالرد قصير."
         else:
@@ -254,42 +238,47 @@ async def ask(request: Request, file: UploadFile = File(...)):
             ],
             max_output_tokens=1200
         )
-
         reply = ""
         for item in getattr(res, "output", []):
             for content in getattr(item, "content", []):
                 if content.type == "output_text":
                     reply += content.text
-
         reply = reply.strip() or "لم أفهم سؤالك."
         reply = clean_for_tts(reply)
 
-        # -------- TTS --------
-        speech = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=reply,
-            format="wav"
-        )
+        # -------- TTS WAV --------
+        filename = f"{raw_key}.wav"
+        path = os.path.join(AUDIO_DIR, filename)
 
-        audio_output = speech.read()
+        if not os.path.exists(path):
+            speech = client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice="alloy",
+                input=reply
+            )
+            audio_full = speech.read()
 
-        # خزن الصوت في Redis
-        r.set(f"audio:{raw_key}", audio_output, ex=CACHE_EXPIRE)
+            # تحويل الصوت باستخدام pydub وضبطه
+            audio = AudioSegment.from_file(io.BytesIO(audio_full))
+            audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
+            audio.export(path, format="wav")
 
-        # خزن الميتا
+            # تأكيد وجود الملف
+            while not os.path.exists(path):
+                time.sleep(0.05)
+
+        # -------- SAVE CACHE TO REDIS --------
         cache_item = {
-            "key": raw_key,
             "original": raw_text,
             "embedding": embedding,
-            "text": reply
+            "text": reply,
+            "audio_file": path
         }
-
-        r.set(meta_key, json.dumps(cache_item), ex=CACHE_EXPIRE)
+        r.set(raw_key, json.dumps(cache_item))
 
         return {
             "text": reply,
-            "audio_url": f"/audio/{raw_key}",
+            "audio_url": f"/audio/{filename}",
             "cached": False
         }
 
@@ -298,12 +287,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ====================== AUDIO SERVE ======================
-@app.get("/audio/{key}")
-async def serve_audio(key: str):
-    audio_data = r.get(f"audio:{key}")
-    if not audio_data:
+@app.get("/audio/{file}")
+async def serve_audio(file: str):
+    path = os.path.join(AUDIO_DIR, file)
+    if not os.path.exists(path):
         return JSONResponse(status_code=404, content={"error": "Not found"})
-    return Response(content=audio_data, media_type="audio/wav")
+    return FileResponse(path, media_type="audio/wav")
 
 # ====================== LANGUAGE ======================
 @app.post("/set_language")
@@ -311,4 +300,3 @@ async def set_language(lang: str = Form(...)):
     global current_language
     current_language = lang.lower()
     return {"status": "ok"}
-
