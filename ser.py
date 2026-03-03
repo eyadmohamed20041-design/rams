@@ -73,10 +73,18 @@ def semantic_cache_lookup(new_emb, threshold=0.80):
     best = None
     best_score = 0
     for key in r.keys():
+        # تجاهل الصوت
+        if isinstance(key, bytes):
+            k_str = key.decode("utf-8")
+        else:
+            k_str = key
+        if k_str.startswith("audio:"):
+            continue
         item_json = r.get(key)
         if not item_json:
             continue
-        item = json.loads(item_json)
+        item_json_str = item_json.decode("utf-8") if isinstance(item_json, bytes) else item_json
+        item = json.loads(item_json_str)
         old_emb = item.get("embedding")
         if not old_emb:
             continue
@@ -170,7 +178,7 @@ async def ask(request: Request, file: UploadFile = File(...)):
         # -------- HASH CACHE --------
         cached_data = r.get(raw_key)
         if cached_data:
-            c = json.loads(cached_data)
+            c = json.loads(cached_data.decode("utf-8") if isinstance(cached_data, bytes) else cached_data)
             logging.info("Returning from cache")
             return {
                 "text": c["text"],
@@ -251,9 +259,12 @@ async def ask(request: Request, file: UploadFile = File(...)):
         audio = audio.set_frame_rate(44100).set_sample_width(2).set_channels(1)
 
         # تخزين الصوت مباشرة في Redis
-        r.set(f"audio:{raw_key}", audio.export(format="wav").read(), ex=CACHE_EXPIRE)
+        buf = io.BytesIO()
+        audio.export(buf, format="wav")
+        buf.seek(0)
+        r.set(f"audio:{raw_key}", buf.read(), ex=CACHE_EXPIRE)
 
-        # -------- SAVE CACHE TO REDIS --------
+        # -------- SAVE CACHE TO REDIS (JSON) --------
         cache_item = {
             "original": raw_text,
             "embedding": embedding,
