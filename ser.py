@@ -8,7 +8,6 @@ from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from pydub import AudioSegment
 from openai import OpenAI
 
 
@@ -23,12 +22,13 @@ API_SECRET = os.getenv("API_SECRET", "SECRET123")
 if not OPENAI_API_KEY:
     raise Exception("OPENAI_API_KEY not found")
 
+
 client = OpenAI(
     api_key=OPENAI_API_KEY
 )
 
 
-# ====================== SERVER SETUP ======================
+# ====================== SERVER ======================
 app = FastAPI()
 
 app.add_middleware(
@@ -52,11 +52,12 @@ LANGUAGE_NAMES = {
 
 
 # ====================== RATE LIMIT ======================
-last_request_time = 0
+user_last_request = {}
+
 MIN_INTERVAL = 0.5
 
 
-# ====================== TEXT NORMALIZE ======================
+# ====================== NORMALIZE ======================
 def normalize(text: str):
 
     text = text.lower().strip()
@@ -95,7 +96,7 @@ def determine_response_type(text: str):
     return "normal"
 
 
-# ====================== CLEAN TTS ======================
+# ====================== CLEAN ======================
 def clean_for_tts(text: str):
 
     text = text.strip()
@@ -107,14 +108,14 @@ def clean_for_tts(text: str):
     return text
 
 
-# ====================== MAIN ENDPOINT ======================
+# ====================== ASK ======================
 @app.post("/ask")
 async def ask(
     request: Request,
     text: str = Form(...)
 ):
 
-    global last_request_time
+    global user_last_request
 
     try:
 
@@ -128,11 +129,17 @@ async def ask(
                 }
             )
 
-
         # ================= RATE LIMIT =================
+        client_ip = request.client.host
+
         now = time.time()
 
-        if now - last_request_time < MIN_INTERVAL:
+        last_time = user_last_request.get(
+            client_ip,
+            0
+        )
+
+        if now - last_time < MIN_INTERVAL:
 
             return JSONResponse(
                 status_code=429,
@@ -141,8 +148,7 @@ async def ask(
                 }
             )
 
-        last_request_time = now
-
+        user_last_request[client_ip] = now
 
         # ================= VALIDATE =================
         text = normalize(text)
@@ -156,15 +162,12 @@ async def ask(
                 }
             )
 
-
-        logging.info(f"USER TEXT: {text}")
-
+        logging.info(f"USER: {text}")
 
         # ================= RESPONSE TYPE =================
         response_type = determine_response_type(
             text
         )
-
 
         # ================= SYSTEM PROMPT =================
         system_prompt = f"""
@@ -184,7 +187,6 @@ async def ask(
 - استخدم معلومات تاريخية دقيقة.
 """
 
-
         if response_type == "short":
 
             system_prompt += """
@@ -196,7 +198,6 @@ async def ask(
             system_prompt += """
 - اجعل الرد مفصل وغني.
 """
-
 
         # ================= GPT =================
         gpt_response = client.responses.create(
@@ -211,9 +212,8 @@ async def ask(
                     "content": text
                 }
             ],
-            max_output_tokens=600
+            max_output_tokens=500
         )
-
 
         reply = ""
 
@@ -233,74 +233,33 @@ async def ask(
 
                     reply += content.text
 
-
         reply = reply.strip()
-
 
         if not reply:
 
             reply = "لم أفهم سؤالك."
 
+        reply = clean_for_tts(reply)
 
-        reply = clean_for_tts(
-            reply
-        )
+        logging.info(f"RAMSES: {reply}")
 
-
-        logging.info(
-            f"RAMSES REPLY: {reply}"
-        )
-
-
-        # ================= TTS =================
+        # ================= TTS MP3 =================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
             input=reply
         )
 
-
         mp3_bytes = speech.read()
 
-
-        # ================= WAV CONVERT =================
-        audio = AudioSegment.from_file(
-            io.BytesIO(
-                mp3_bytes
-            )
-        )
-
-        audio = audio.set_frame_rate(
-            44100
-        )
-
-        audio = audio.set_sample_width(
-            2
-        )
-
-        audio = audio.set_channels(
-            1
-        )
-
-
-        wav_buffer = io.BytesIO()
-
-        audio.export(
-            wav_buffer,
-            format="wav"
-        )
-
-        wav_buffer.seek(
-            0
-        )
-
-
-        # ================= RETURN AUDIO DIRECT =================
+        # ================= RETURN DIRECT MP3 =================
         return Response(
-            content=wav_buffer.read(),
-            media_type="audio/wav"
+            content=mp3_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "X-AI-Text": reply
+            }
         )
-
 
     except Exception as e:
 
@@ -333,11 +292,11 @@ async def set_language(
     }
 
 
-# ====================== HEALTH CHECK ======================
+# ====================== HEALTH ======================
 @app.get("/")
 async def health():
 
     return {
         "status": "running",
-        "mode": "text_to_audio"
+        "mode": "ultra_fast_mp3"
     }
