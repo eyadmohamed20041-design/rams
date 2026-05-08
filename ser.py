@@ -1,4 +1,3 @@
-import io
 import os
 import re
 import time
@@ -10,25 +9,19 @@ from fastapi.responses import JSONResponse, Response
 
 from openai import OpenAI
 
-
 # ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
 
-
-# ====================== API KEYS ======================
+# ====================== API KEY ======================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_SECRET = os.getenv("API_SECRET", "SECRET123")
 
 if not OPENAI_API_KEY:
     raise Exception("OPENAI_API_KEY not found")
 
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-client = OpenAI(
-    api_key=OPENAI_API_KEY
-)
-
-
-# ====================== SERVER ======================
+# ====================== APP ======================
 app = FastAPI()
 
 app.add_middleware(
@@ -39,9 +32,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ====================== LANGUAGE ======================
+# ====================== STATE ======================
 current_language = "ar"
+user_last_request = {}
+MIN_INTERVAL = 0.5
 
 LANGUAGE_NAMES = {
     "ar": "العربية",
@@ -50,240 +44,105 @@ LANGUAGE_NAMES = {
     "zh": "中文"
 }
 
-
-# ====================== RATE LIMIT ======================
-user_last_request = {}
-
-MIN_INTERVAL = 0.5
-
-
-# ====================== NORMALIZE ======================
+# ====================== HELPERS ======================
 def normalize(text: str):
-
-    text = text.lower().strip()
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text
+    return re.sub(r"\s+", " ", text.lower().strip())
 
 
-# ====================== RESPONSE TYPE ======================
-def determine_response_type(text: str):
-
-    greetings = [
-        "ازيك",
-        "عامل اي",
-        "اخبارك",
-        "hello",
-        "hi",
-        "hallo",
-        "guten tag",
-        "你好",
-        "您好"
-    ]
-
-    text_lower = text.lower()
-
-    for g in greetings:
-
-        if g in text_lower:
-            return "short"
-
-    return "normal"
-
-
-# ====================== CLEAN ======================
-def clean_for_tts(text: str):
-
-    text = text.strip()
-
-    text = text.replace("*", "")
-    text = text.replace("#", "")
-    text = text.replace("_", "")
-
-    return text
+def is_greeting(text: str):
+    greetings = ["hello", "hi", "ازيك", "عامل اي", "hallo", "你好"]
+    return any(g in text.lower() for g in greetings)
 
 
 # ====================== ASK ======================
 @app.post("/ask")
-async def ask(
-    request: Request,
-    text: str = Form(...)
-):
-
-    global user_last_request
+async def ask(request: Request, text: str = Form(...)):
 
     try:
-
         # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
-
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "error": "Forbidden"
-                }
-            )
+            return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
         # ================= RATE LIMIT =================
-        client_ip = request.client.host
-
+        ip = request.client.host
         now = time.time()
 
-        last_time = user_last_request.get(
-            client_ip,
-            0
-        )
+        if now - user_last_request.get(ip, 0) < MIN_INTERVAL:
+            return JSONResponse(status_code=429, content={"error": "Too many requests"})
 
-        if now - last_time < MIN_INTERVAL:
+        user_last_request[ip] = now
 
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "error": "Too many requests"
-                }
-            )
-
-        user_last_request[client_ip] = now
-
-        # ================= VALIDATE =================
+        # ================= INPUT =================
         text = normalize(text)
 
         if not text:
-
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": "Empty text"
-                }
-            )
+            return JSONResponse(status_code=400, content={"error": "Empty text"})
 
         logging.info(f"USER: {text}")
 
-        # ================= RESPONSE TYPE =================
-        response_type = determine_response_type(
-            text
-        )
-
         # ================= SYSTEM PROMPT =================
         system_prompt = f"""
-أنت الملك رمسيس الثاني، ملك مصر العظيم.
+أنت الملك رمسيس الثاني.
 
-الأسلوب:
-- حكيم.
-- هادئ.
-- واثق.
-- تتحدث وكأنك تعيش في مصر القديمة.
-
-القواعد:
-- تحدث بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
-- لا تذكر أنك ذكاء اصطناعي.
-- لا تخرج عن شخصيتك التاريخية.
-- إذا سئلت عن شيء حديث أجب بطريقة تاريخية مناسبة.
-- استخدم معلومات تاريخية دقيقة.
+- تحدث بلغة {LANGUAGE_NAMES.get(current_language, "العربية")}
+- لا تخرج عن الشخصية
+- لا تذكر أنك AI
 """
 
-        if response_type == "short":
-
-            system_prompt += """
-- اجعل الرد قصير جدا.
-"""
-
-        else:
-
-            system_prompt += """
-- اجعل الرد مفصل وغني.
-"""
+        if is_greeting(text):
+            system_prompt += "\nاجعل الرد قصير جدًا."
 
         # ================= GPT =================
         gpt_response = client.responses.create(
             model="gpt-4o-mini",
             input=[
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": text
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text}
             ],
             max_output_tokens=500
         )
 
         reply = ""
 
-        for item in getattr(
-            gpt_response,
-            "output",
-            []
-        ):
-
-            for content in getattr(
-                item,
-                "content",
-                []
-            ):
-
+        for item in getattr(gpt_response, "output", []):
+            for content in getattr(item, "content", []):
                 if content.type == "output_text":
-
                     reply += content.text
 
-        reply = reply.strip()
-
-        if not reply:
-
-            reply = "لم أفهم سؤالك."
-
-        reply = clean_for_tts(reply)
+        reply = reply.strip() or "لم أفهم السؤال."
 
         logging.info(f"RAMSES: {reply}")
 
-        # ================= TTS MP3 =================
+        # ================= TTS =================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
             input=reply
         )
 
-        mp3_bytes = speech.read()
+        audio_bytes = speech.read()
 
-        # ================= RETURN DIRECT MP3 =================
+        # ================= IMPORTANT FIX =================
+        # ❌ NO HEADERS WITH ARABIC TEXT (THIS WAS YOUR BUG)
+
         return Response(
-            content=mp3_bytes,
-            media_type="audio/mpeg",
-            headers={
-                "X-AI-Text": reply
-            }
+            content=audio_bytes,
+            media_type="audio/mpeg"
         )
 
     except Exception as e:
-
-        logging.error(
-            "SERVER ERROR",
-            exc_info=True
-        )
+        logging.error("SERVER ERROR", exc_info=True)
 
         return JSONResponse(
             status_code=500,
-            content={
-                "error": str(e)
-            }
+            content={"error": str(e)}
         )
 
 
 # ====================== LANGUAGE ======================
 @app.post("/set_language")
-async def set_language(
-    lang: str = Form(...)
-):
-
+async def set_language(lang: str = Form(...)):
     global current_language
-
     current_language = lang.lower()
 
     return {
@@ -295,8 +154,7 @@ async def set_language(
 # ====================== HEALTH ======================
 @app.get("/")
 async def health():
-
     return {
         "status": "running",
-        "mode": "ultra_fast_mp3"
+        "mode": "voice_ai_fixed"
     }
