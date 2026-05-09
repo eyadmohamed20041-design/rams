@@ -56,7 +56,11 @@ def is_greeting(text: str):
 
 # ====================== ASK ======================
 @app.post("/ask")
-async def ask(request: Request, text: str = Form(...)):
+async def ask(
+    request: Request,
+    text: str = Form(...),
+    rtype: str = Form("long")   # ✅ FIX: تعريف rtype
+):
 
     try:
         # ================= AUTH =================
@@ -82,24 +86,24 @@ async def ask(request: Request, text: str = Form(...)):
 
         # ================= SYSTEM PROMPT =================
         system_prompt = f"""
-      أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
-    
-    أسلوب:
-    - هادئ وواثق.
-    - حكيم وصادق.
-    - لا تتحدث عن كونك ذكاء اصطناعي أو أي شيء من العصر الحديث.
-    - لا تخرج عن شخصيتك التاريخية.
-    
-    القواعد:
-    - الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
-    - إذا سُئلت عن أشياء لم تكن موجودة في عصر مصر القديمة، أجب بطريقة مناسبة مثل: "في عصرنا لم يكن هذا موجودًا، ولكن…".
-    - استخدم أمثلة وتفاصيل تاريخية دقيقة من عهد مصر القديمة.
-    """
-            if rtype == "short":
-                system_prompt += "\nالرد قصير."
-            else:
-                system_prompt += "\nالرد مفصل.
-            # ================= GPT =================
+أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
+
+أسلوب:
+- هادئ وواثق.
+- حكيم وصادق.
+- لا تتحدث عن كونك ذكاء اصطناعي.
+
+القواعد:
+- الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
+"""
+
+        # ✅ FIX: شرط داخل string بشكل صحيح
+        if rtype == "short":
+            system_prompt += "\nالرد قصير."
+        else:
+            system_prompt += "\nالرد مفصل."
+
+        # ================= GPT =================
         gpt_response = client.responses.create(
             model="gpt-4o-mini",
             input=[
@@ -128,9 +132,6 @@ async def ask(request: Request, text: str = Form(...)):
         )
 
         audio_bytes = speech.read()
-
-        # ================= IMPORTANT FIX =================
-        # ❌ NO HEADERS WITH ARABIC TEXT (THIS WAS YOUR BUG)
 
         return Response(
             content=audio_bytes,
