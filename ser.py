@@ -1,6 +1,4 @@
 import os
-import re
-import time
 import logging
 
 from fastapi import FastAPI, Form, Request
@@ -12,7 +10,7 @@ from openai import OpenAI
 # ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
 
-# ====================== API KEY ======================
+# ====================== API ======================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_SECRET = os.getenv("API_SECRET", "SECRET123")
 
@@ -32,102 +30,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================== STATE ======================
-current_language = "ar"
-user_last_request = {}
-MIN_INTERVAL = 0.5
+# =========================================================
+# 🔊 FIXED + THINKING TTS ONLY
+# =========================================================
+# السيرفر ده وظيفته الوحيدة:
+# ياخد النص ويحوله صوت بدون GPT
+# استخدمه مرة واحدة فقط عشان يعمل cache
+# =========================================================
 
-LANGUAGE_NAMES = {
-    "ar": "العربية",
-    "en": "English",
-    "de": "Deutsch",
-    "zh": "中文"
-}
-
-# ====================== HELPERS ======================
-def normalize(text: str):
-    return re.sub(r"\s+", " ", text.lower().strip())
-
-
-def is_greeting(text: str):
-    greetings = ["hello", "hi", "ازيك", "عامل اي", "hallo", "你好"]
-    return any(g in text.lower() for g in greetings)
-
-
-# ====================== ASK ======================
-@app.post("/ask")
-async def ask(
+@app.post("/tts")
+async def tts(
     request: Request,
-    text: str = Form(...),
-    rtype: str = Form("long")   # ✅ FIX: تعريف rtype
+    text: str = Form(...)
 ):
 
     try:
+
         # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
-            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Forbidden"}
+            )
 
-        # ================= RATE LIMIT =================
-        ip = request.client.host
-        now = time.time()
-
-        if now - user_last_request.get(ip, 0) < MIN_INTERVAL:
-            return JSONResponse(status_code=429, content={"error": "Too many requests"})
-
-        user_last_request[ip] = now
-
-        # ================= INPUT =================
-        text = normalize(text)
+        text = text.strip()
 
         if not text:
-            return JSONResponse(status_code=400, content={"error": "Empty text"})
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Empty text"}
+            )
 
-        logging.info(f"USER: {text}")
-
-        # ================= SYSTEM PROMPT =================
-        system_prompt = f"""
-أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
-
-أسلوب:
-- هادئ وواثق.
-- حكيم وصادق.
-- لا تتحدث عن كونك ذكاء اصطناعي.
-
-القواعد:
-- الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
-"""
-
-        if rtype == "short":
-            system_prompt += "\nالرد قصير."
-        else:
-            system_prompt += "\nالرد مفصل."
-
-        # ================= GPT =================
-        gpt_response = client.responses.create(
-            model="gpt-4o-mini",
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ],
-            max_output_tokens=500
-        )
-
-        reply = ""
-
-        for item in getattr(gpt_response, "output", []):
-            for content in getattr(item, "content", []):
-                if content.type == "output_text":
-                    reply += content.text
-
-        reply = reply.strip() or "لم أفهم السؤال."
-
-        logging.info(f"RAMSES: {reply}")
+        logging.info(f"TTS: {text}")
 
         # ================= TTS =================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=reply
+            input=text
         )
 
         audio_bytes = speech.read()
@@ -138,48 +78,7 @@ async def ask(
         )
 
     except Exception as e:
-        logging.error("SERVER ERROR", exc_info=True)
 
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
-
-
-# =========================================================
-# 🔊 NEW: TTS ONLY ENDPOINT (NO GPT - EXACT TEXT → VOICE)
-# =========================================================
-@app.post("/tts")
-async def tts(
-    request: Request,
-    text: str = Form(...)
-):
-
-    try:
-        # ================= AUTH =================
-        if request.headers.get("x-api-key") != API_SECRET:
-            return JSONResponse(status_code=403, content={"error": "Forbidden"})
-
-        text = text.strip()
-
-        if not text:
-            return JSONResponse(status_code=400, content={"error": "Empty text"})
-
-        logging.info(f"TTS ONLY: {text}")
-
-        # ================= PURE TTS (NO GPT) =================
-        speech = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=text   # 🔴 نفس النص بدون أي تغيير
-        )
-
-        return Response(
-            content=speech.read(),
-            media_type="audio/mpeg"
-        )
-
-    except Exception as e:
         logging.error("TTS ERROR", exc_info=True)
 
         return JSONResponse(
@@ -187,23 +86,10 @@ async def tts(
             content={"error": str(e)}
         )
 
-
-# ====================== LANGUAGE ======================
-@app.post("/set_language")
-async def set_language(lang: str = Form(...)):
-    global current_language
-    current_language = lang.lower()
-
-    return {
-        "status": "ok",
-        "language": current_language
-    }
-
-
 # ====================== HEALTH ======================
 @app.get("/")
 async def health():
     return {
         "status": "running",
-        "mode": "voice_ai_fixed"
+        "mode": "tts_only"
     }
