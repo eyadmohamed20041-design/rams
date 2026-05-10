@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse, Response
 
 from openai import OpenAI
 
-# ====================== LOGGING ======================
+# ====================== LOGGING ======================1
 logging.basicConfig(level=logging.INFO)
 
 # ====================== API ======================
