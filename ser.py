@@ -97,7 +97,6 @@ async def ask(
 - الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
 """
 
-        # ✅ FIX: شرط داخل string بشكل صحيح
         if rtype == "short":
             system_prompt += "\nالرد قصير."
         else:
@@ -140,6 +139,48 @@ async def ask(
 
     except Exception as e:
         logging.error("SERVER ERROR", exc_info=True)
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+# =========================================================
+# 🔊 NEW: TTS ONLY ENDPOINT (NO GPT - EXACT TEXT → VOICE)
+# =========================================================
+@app.post("/tts")
+async def tts(
+    request: Request,
+    text: str = Form(...)
+):
+
+    try:
+        # ================= AUTH =================
+        if request.headers.get("x-api-key") != API_SECRET:
+            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+        text = text.strip()
+
+        if not text:
+            return JSONResponse(status_code=400, content={"error": "Empty text"})
+
+        logging.info(f"TTS ONLY: {text}")
+
+        # ================= PURE TTS (NO GPT) =================
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=text   # 🔴 نفس النص بدون أي تغيير
+        )
+
+        return Response(
+            content=speech.read(),
+            media_type="audio/mpeg"
+        )
+
+    except Exception as e:
+        logging.error("TTS ERROR", exc_info=True)
 
         return JSONResponse(
             status_code=500,
