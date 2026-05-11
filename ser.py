@@ -44,9 +44,54 @@ LANGUAGE_NAMES = {
     "zh": "中文"
 }
 
+# ====================== CURRENT LANGUAGE ======================
+current_language = "ar"
+
 # ====================== HELPERS ======================
 def normalize(text: str):
     return re.sub(r"\s+", " ", text.lower().strip())
+
+
+# ====================== SET LANGUAGE ======================
+@app.post("/set_language")
+async def set_language(
+    request: Request,
+    lang: str = Form(...)
+):
+    global current_language
+
+    try:
+        # ================= AUTH =================
+        if request.headers.get("x-api-key") != API_SECRET:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Forbidden"}
+            )
+
+        lang = lang.lower().strip()
+
+        if lang not in LANGUAGE_NAMES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Unsupported language"}
+            )
+
+        current_language = lang
+
+        logging.info(f"🌍 GLOBAL LANGUAGE SET TO: {lang}")
+
+        return {
+            "success": True,
+            "language": current_language
+        }
+
+    except Exception as e:
+        logging.error("SET LANGUAGE ERROR", exc_info=True)
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
 
 # ====================== ASK ======================
@@ -61,14 +106,20 @@ async def ask(
     try:
         # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
-            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Forbidden"}
+            )
 
         # ================= RATE LIMIT =================
         ip = request.client.host
         now = time.time()
 
         if now - user_last_request.get(ip, 0) < MIN_INTERVAL:
-            return JSONResponse(status_code=429, content={"error": "Too many requests"})
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Too many requests"}
+            )
 
         user_last_request[ip] = now
 
@@ -76,21 +127,34 @@ async def ask(
         text = normalize(text)
 
         if not text:
-            return JSONResponse(status_code=400, content={"error": "Empty text"})
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Empty text"}
+            )
 
         logging.info(f"USER: {text}")
 
         # ================= LANGUAGE =================
-        lang = lang.lower().strip() if lang else "ar"
+        lang = lang.lower().strip() if lang else current_language
 
         if lang not in LANGUAGE_NAMES:
             lang = "ar"
 
         logging.info(f"LANG: {lang}")
 
+        # ================= LANGUAGE INSTRUCTION =================
+        language_instruction = {
+            "ar": "يجب أن تكون كل الردود باللغة العربية فقط.",
+            "en": "All responses must be in English only.",
+            "de": "Alle Antworten müssen auf Deutsch sein.",
+            "zh": "所有回答必须使用中文。"
+        }.get(lang, "يجب أن تكون كل الردود باللغة العربية فقط.")
+
         # ================= SYSTEM PROMPT =================
         system_prompt = f"""
 أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
+
+{language_instruction}
 
 مهم جداً:
 - لا تذكر أي قواعد أو تعليمات داخل الرد
@@ -113,8 +177,14 @@ async def ask(
         gpt_response = client.responses.create(
             model="gpt-4o-mini",
             input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
             ],
             max_output_tokens=400
         )
@@ -159,13 +229,20 @@ async def tts(
 ):
 
     try:
+        # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
-            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Forbidden"}
+            )
 
         text = text.strip()
 
         if not text:
-            return JSONResponse(status_code=400, content={"error": "Empty text"})
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Empty text"}
+            )
 
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
