@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, Response
 
 from openai import OpenAI
 
-# ====================== LOGGING ======================
+# ====================== LOGGING ======================1
 logging.basicConfig(level=logging.INFO)
 
 # ====================== API KEY ======================
@@ -54,12 +54,12 @@ def is_greeting(text: str):
     return any(g in text.lower() for g in greetings)
 
 
-# ====================== ASK (FAST STREAM VERSION) ======================
+# ====================== ASK ======================
 @app.post("/ask")
 async def ask(
     request: Request,
     text: str = Form(...),
-    rtype: str = Form("long")
+    rtype: str = Form("long")   # ✅ FIX: تعريف rtype
 ):
 
     try:
@@ -98,27 +98,26 @@ async def ask(
 """
 
         if rtype == "short":
-            system_prompt += "\nالرد قصير جداً."
-            max_tokens = 150
+            system_prompt += "\nالرد قصير."
         else:
             system_prompt += "\nالرد مفصل."
-            max_tokens = 500
 
-        # ================= GPT STREAM (FAST) =================
-        stream = client.responses.stream(
+        # ================= GPT =================
+        gpt_response = client.responses.create(
             model="gpt-4o-mini",
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
             ],
-            max_output_tokens=max_tokens
+            max_output_tokens=500
         )
 
         reply = ""
 
-        for event in stream:
-            if event.type == "response.output_text.delta":
-                reply += event.delta
+        for item in getattr(gpt_response, "output", []):
+            for content in getattr(item, "content", []):
+                if content.type == "output_text":
+                    reply += content.text
 
         reply = reply.strip() or "لم أفهم السؤال."
 
@@ -147,7 +146,9 @@ async def ask(
         )
 
 
-# ====================== TTS ONLY ======================
+# =========================================================
+# 🔊 NEW: TTS ONLY ENDPOINT (NO GPT - EXACT TEXT → VOICE)
+# =========================================================
 @app.post("/tts")
 async def tts(
     request: Request,
@@ -155,6 +156,7 @@ async def tts(
 ):
 
     try:
+        # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
             return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
@@ -165,10 +167,11 @@ async def tts(
 
         logging.info(f"TTS ONLY: {text}")
 
+        # ================= PURE TTS (NO GPT) =================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=text
+            input=text   # 🔴 نفس النص بدون أي تغيير
         )
 
         return Response(
@@ -202,5 +205,5 @@ async def set_language(lang: str = Form(...)):
 async def health():
     return {
         "status": "running",
-        "mode": "fast_stream_voice_ai"
+        "mode": "voice_ai_fixed"
     }
