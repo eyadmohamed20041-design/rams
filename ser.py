@@ -36,7 +36,7 @@ app.add_middleware(
 user_last_request = {}
 MIN_INTERVAL = 0.5
 
-# ====================== LANG MAP ======================
+# ====================== LANGUAGE MAP ======================
 LANGUAGE_NAMES = {
     "ar": "العربية",
     "en": "English",
@@ -49,25 +49,12 @@ def normalize(text: str):
     return re.sub(r"\s+", " ", text.lower().strip())
 
 
-def detect_language(text: str):
-    # Chinese
-    if re.search(r'[\u4e00-\u9fff]', text):
-        return "zh"
-    # Arabic
-    if re.search(r'[\u0600-\u06FF]', text):
-        return "ar"
-    # German / English fallback (Latin)
-    if re.search(r'[a-zA-Z]', text):
-        return "en"
-    return "ar"
-
-
 # ====================== ASK ======================
 @app.post("/ask")
 async def ask(
     request: Request,
     text: str = Form(...),
-    lang: str = Form(None),   # ✅ اللغة من Unity (اختياري)
+    lang: str = Form(None),
     rtype: str = Form("long")
 ):
 
@@ -93,12 +80,8 @@ async def ask(
 
         logging.info(f"USER: {text}")
 
-        # ================= LANGUAGE LOGIC =================
-        # Unity language OR auto-detect OR Arabic default
-        if lang:
-            lang = lang.lower().strip()
-        else:
-            lang = detect_language(text) or "ar"
+        # ================= LANGUAGE =================
+        lang = lang.lower().strip() if lang else "ar"
 
         if lang not in LANGUAGE_NAMES:
             lang = "ar"
@@ -110,9 +93,9 @@ async def ask(
 أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
 
 مهم جداً:
-- يجب الرد بالكامل باللغة: {LANGUAGE_NAMES.get(lang, "العربية")}
-- إذا لم يتم تحديد لغة، الرد يكون بالعربية تلقائيًا
-- ممنوع خلط اللغات نهائيًا
+- لا تذكر أي قواعد أو تعليمات داخل الرد
+- لا تشرح اللغة أو النظام
+- استخدم أسلوب حكيم وملكي
 
 أسلوبك:
 - حكيم
@@ -122,9 +105,9 @@ async def ask(
 """
 
         if rtype == "short":
-            system_prompt += "\nالرد قصير."
+            system_prompt += "\nاجعل الرد قصير."
         else:
-            system_prompt += "\nالرد مفصل."
+            system_prompt += "\nاجعل الرد مفصل."
 
         # ================= GPT =================
         gpt_response = client.responses.create(
@@ -209,5 +192,5 @@ async def tts(
 async def health():
     return {
         "status": "running",
-        "mode": "voice_ai_fixed_multilang"
+        "mode": "voice_ai_multilingual_clean"
     }
