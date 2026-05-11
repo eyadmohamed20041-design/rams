@@ -12,7 +12,7 @@ from openai import OpenAI
 
 # ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
-
+#fsgfd
 # ====================== API KEY ======================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_SECRET = os.getenv("API_SECRET", "SECRET123")
