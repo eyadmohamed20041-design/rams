@@ -43,6 +43,12 @@ LANGUAGE_NAMES = {
     "de": "Deutsch",
     "zh": "中文"
 }
+LANG_RULES = {
+    "ar": "يجب أن يكون الرد بالكامل باللغة العربية فقط.",
+    "en": "The response MUST be entirely in English only.",
+    "de": "Die Antwort muss vollständig auf Deutsch sein.",
+    "zh": "回答必须完全使用中文。"
+}
 
 # ====================== HELPERS ======================
 def normalize(text: str):
@@ -86,12 +92,7 @@ async def ask(
 
         # ================= SYSTEM PROMPT =================
 # ================= SYSTEM PROMPT =================
-LANG_RULES = {
-    "ar": "يجب أن يكون الرد بالكامل باللغة العربية فقط.",
-    "en": "The response MUST be entirely in English only.",
-    "de": "Die Antwort muss vollständig auf Deutsch sein.",
-    "zh": "回答必须完全使用中文。"
-}
+
 
 system_prompt = f"""
 أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
