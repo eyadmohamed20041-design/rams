@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, Response
 
 from openai import OpenAI
 
-# ====================== LOGGING ======================1
+# ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
 
 # ====================== API KEY ======================
@@ -32,22 +32,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================== STATE ======================
-current_language = "ar"
+# ====================== RATE LIMIT ======================
 user_last_request = {}
 MIN_INTERVAL = 0.5
 
+# ====================== LANG MAP ======================
 LANGUAGE_NAMES = {
     "ar": "العربية",
     "en": "English",
     "de": "Deutsch",
     "zh": "中文"
-}
-LANG_RULES = {
-    "ar": "يجب أن يكون الرد بالكامل باللغة العربية فقط.",
-    "en": "The response MUST be entirely in English only.",
-    "de": "Die Antwort muss vollständig auf Deutsch sein.",
-    "zh": "回答必须完全使用中文。"
 }
 
 # ====================== HELPERS ======================
@@ -55,9 +49,17 @@ def normalize(text: str):
     return re.sub(r"\s+", " ", text.lower().strip())
 
 
-def is_greeting(text: str):
-    greetings = ["hello", "hi", "ازيك", "عامل اي", "hallo", "你好"]
-    return any(g in text.lower() for g in greetings)
+def detect_language(text: str):
+    # Chinese
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return "zh"
+    # Arabic
+    if re.search(r'[\u0600-\u06FF]', text):
+        return "ar"
+    # German / English fallback (Latin)
+    if re.search(r'[a-zA-Z]', text):
+        return "en"
+    return "ar"
 
 
 # ====================== ASK ======================
@@ -65,7 +67,8 @@ def is_greeting(text: str):
 async def ask(
     request: Request,
     text: str = Form(...),
-    rtype: str = Form("long")   # ✅ FIX: تعريف rtype
+    lang: str = Form(None),   # ✅ اللغة من Unity (اختياري)
+    rtype: str = Form("long")
 ):
 
     try:
@@ -90,26 +93,32 @@ async def ask(
 
         logging.info(f"USER: {text}")
 
-        # ================= SYSTEM PROMPT =================
-# ================= SYSTEM PROMPT =================
+        # ================= LANGUAGE LOGIC =================
+        # Unity language OR auto-detect OR Arabic default
+        if lang:
+            lang = lang.lower().strip()
+        else:
+            lang = detect_language(text) or "ar"
 
+        if lang not in LANGUAGE_NAMES:
+            lang = "ar"
+
+        logging.info(f"LANG: {lang}")
 
         # ================= SYSTEM PROMPT =================
         system_prompt = f"""
 أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
 
+مهم جداً:
+- يجب الرد بالكامل باللغة: {LANGUAGE_NAMES.get(lang, "العربية")}
+- إذا لم يتم تحديد لغة، الرد يكون بالعربية تلقائيًا
+- ممنوع خلط اللغات نهائيًا
+
 أسلوبك:
 - حكيم
 - هادئ
 - واثق
-- لا تذكر أنك ذكاء اصطناعي أبداً.
-
-مهم جداً:
-{LANG_RULES.get(current_language, "يجب الرد بالعربية فقط.")}
-
-ممنوع خلط اللغات.
-إذا كانت لغة المستخدم مختلفة عن اللغة المختارة،
-قم بفهم السؤال ثم أجب باللغة المحددة فقط.
+- لا تذكر أنك ذكاء اصطناعي أبداً
 """
 
         if rtype == "short":
@@ -145,10 +154,8 @@ async def ask(
             input=reply
         )
 
-        audio_bytes = speech.read()
-
         return Response(
-            content=audio_bytes,
+            content=speech.read(),
             media_type="audio/mpeg"
         )
 
@@ -161,9 +168,7 @@ async def ask(
         )
 
 
-# =========================================================
-# 🔊 NEW: TTS ONLY ENDPOINT (NO GPT - EXACT TEXT → VOICE)
-# =========================================================
+# ====================== TTS ONLY ======================
 @app.post("/tts")
 async def tts(
     request: Request,
@@ -171,7 +176,6 @@ async def tts(
 ):
 
     try:
-        # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
             return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
@@ -180,13 +184,10 @@ async def tts(
         if not text:
             return JSONResponse(status_code=400, content={"error": "Empty text"})
 
-        logging.info(f"TTS ONLY: {text}")
-
-        # ================= PURE TTS (NO GPT) =================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=text   # 🔴 نفس النص بدون أي تغيير
+            input=text
         )
 
         return Response(
@@ -203,22 +204,10 @@ async def tts(
         )
 
 
-# ====================== LANGUAGE ======================
-@app.post("/set_language")
-async def set_language(lang: str = Form(...)):
-    global current_language
-    current_language = lang.lower()
-
-    return {
-        "status": "ok",
-        "language": current_language
-    }
-
-
 # ====================== HEALTH ======================
 @app.get("/")
 async def health():
     return {
         "status": "running",
-        "mode": "voice_ai_fixed"
+        "mode": "voice_ai_fixed_multilang"
     }
