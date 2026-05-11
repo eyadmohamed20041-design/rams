@@ -2,6 +2,7 @@ import os
 import re
 import time
 import logging
+import numpy as np
 
 from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,7 @@ from fastapi.responses import JSONResponse, Response
 
 from openai import OpenAI
 
-# ====================== LOGGING ======================1
+# ====================== LOGGING ======================
 logging.basicConfig(level=logging.INFO)
 
 # ====================== API KEY ======================
@@ -44,22 +45,50 @@ LANGUAGE_NAMES = {
     "zh": "中文"
 }
 
+# ====================== SEMANTIC CACHE ======================
+semantic_cache = []
+
 # ====================== HELPERS ======================
 def normalize(text: str):
     return re.sub(r"\s+", " ", text.lower().strip())
-
 
 def is_greeting(text: str):
     greetings = ["hello", "hi", "ازيك", "عامل اي", "hallo", "你好"]
     return any(g in text.lower() for g in greetings)
 
+# ====================== EMBEDDINGS ======================
+def get_embedding(text: str):
+    res = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return np.array(res.data[0].embedding)
+
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def find_semantic_cache(query_vec):
+    best_score = 0
+    best_audio = None
+
+    for item in semantic_cache:
+        score = cosine_similarity(query_vec, item["vector"])
+
+        if score > best_score:
+            best_score = score
+            best_audio = item["audio"]
+
+    if best_score >= 0.85:
+        return best_audio
+
+    return None
 
 # ====================== ASK ======================
 @app.post("/ask")
 async def ask(
     request: Request,
     text: str = Form(...),
-    rtype: str = Form("long")   # ✅ FIX: تعريف rtype
+    rtype: str = Form("long")
 ):
 
     try:
@@ -83,6 +112,16 @@ async def ask(
             return JSONResponse(status_code=400, content={"error": "Empty text"})
 
         logging.info(f"USER: {text}")
+
+        # ================= EMBEDDING =================
+        query_vec = get_embedding(text)
+
+        # ================= SEMANTIC CACHE CHECK =================
+        cached_audio = find_semantic_cache(query_vec)
+
+        if cached_audio is not None:
+            logging.info("🔥 SEMANTIC CACHE HIT")
+            return Response(content=cached_audio, media_type="audio/mpeg")
 
         # ================= SYSTEM PROMPT =================
         system_prompt = f"""
@@ -132,6 +171,13 @@ async def ask(
 
         audio_bytes = speech.read()
 
+        # ================= SAVE TO SEMANTIC CACHE =================
+        semantic_cache.append({
+            "text": text,
+            "vector": query_vec,
+            "audio": audio_bytes
+        })
+
         return Response(
             content=audio_bytes,
             media_type="audio/mpeg"
@@ -145,9 +191,8 @@ async def ask(
             content={"error": str(e)}
         )
 
-
 # =========================================================
-# 🔊 NEW: TTS ONLY ENDPOINT (NO GPT - EXACT TEXT → VOICE)
+# 🔊 TTS ONLY ENDPOINT
 # =========================================================
 @app.post("/tts")
 async def tts(
@@ -156,7 +201,6 @@ async def tts(
 ):
 
     try:
-        # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
             return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
@@ -165,13 +209,10 @@ async def tts(
         if not text:
             return JSONResponse(status_code=400, content={"error": "Empty text"})
 
-        logging.info(f"TTS ONLY: {text}")
-
-        # ================= PURE TTS (NO GPT) =================
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=text   # 🔴 نفس النص بدون أي تغيير
+            input=text
         )
 
         return Response(
@@ -187,7 +228,6 @@ async def tts(
             content={"error": str(e)}
         )
 
-
 # ====================== LANGUAGE ======================
 @app.post("/set_language")
 async def set_language(lang: str = Form(...)):
@@ -199,11 +239,10 @@ async def set_language(lang: str = Form(...)):
         "language": current_language
     }
 
-
 # ====================== HEALTH ======================
 @app.get("/")
 async def health():
     return {
         "status": "running",
-        "mode": "voice_ai_fixed"
+        "mode": "voice_ai_semantic_ramses"
     }
