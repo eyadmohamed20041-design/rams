@@ -5,7 +5,6 @@ pydub
 openai
 redis
 cloudinary
-numpy
-
+numpy==1.26.4
 
 
