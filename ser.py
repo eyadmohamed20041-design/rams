@@ -85,16 +85,29 @@ async def ask(
         logging.info(f"USER: {text}")
 
         # ================= SYSTEM PROMPT =================
-        system_prompt = f"""
+# ================= SYSTEM PROMPT =================
+LANG_RULES = {
+    "ar": "يجب أن يكون الرد بالكامل باللغة العربية فقط.",
+    "en": "The response MUST be entirely in English only.",
+    "de": "Die Antwort muss vollständig auf Deutsch sein.",
+    "zh": "回答必须完全使用中文。"
+}
+
+system_prompt = f"""
 أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
 
-أسلوب:
-- هادئ وواثق.
-- حكيم وصادق.
-- لا تتحدث عن كونك ذكاء اصطناعي.
+أسلوبك:
+- حكيم
+- هادئ
+- واثق
+- لا تذكر أنك ذكاء اصطناعي أبداً.
 
-القواعد:
-- الرد بلغة {LANGUAGE_NAMES.get(current_language, 'العربية')}.
+مهم جداً:
+{LANG_RULES.get(current_language, "يجب الرد بالعربية فقط.")}
+
+ممنوع خلط اللغات.
+إذا كانت لغة المستخدم مختلفة عن اللغة المختارة،
+قم بفهم السؤال ثم أجب باللغة المحددة فقط.
 """
 
         if rtype == "short":
@@ -109,7 +122,7 @@ async def ask(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
             ],
-            max_output_tokens=500
+            max_output_tokens=400
         )
 
         reply = ""
