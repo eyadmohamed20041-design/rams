@@ -36,62 +36,9 @@ app.add_middleware(
 user_last_request = {}
 MIN_INTERVAL = 0.5
 
-# ====================== LANGUAGE MAP ======================
-LANGUAGE_NAMES = {
-    "ar": "العربية",
-    "en": "English",
-    "de": "Deutsch",
-    "zh": "中文"
-}
-
-# ====================== CURRENT LANGUAGE ======================
-current_language = "ar"
-
 # ====================== HELPERS ======================
 def normalize(text: str):
     return re.sub(r"\s+", " ", text.lower().strip())
-
-
-# ====================== SET LANGUAGE ======================
-@app.post("/set_language")
-async def set_language(
-    request: Request,
-    lang: str = Form(...)
-):
-    global current_language
-
-    try:
-        # ================= AUTH =================
-        if request.headers.get("x-api-key") != API_SECRET:
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Forbidden"}
-            )
-
-        lang = lang.lower().strip()
-
-        if lang not in LANGUAGE_NAMES:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Unsupported language"}
-            )
-
-        current_language = lang
-
-        logging.info(f"🌍 GLOBAL LANGUAGE SET TO: {lang}")
-
-        return {
-            "success": True,
-            "language": current_language
-        }
-
-    except Exception as e:
-        logging.error("SET LANGUAGE ERROR", exc_info=True)
-
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
 
 
 # ====================== ASK ======================
@@ -99,8 +46,7 @@ async def set_language(
 async def ask(
     request: Request,
     text: str = Form(...),
-    lang: str = Form(None),
-    rtype: str = Form("long")
+    rtype: str = Form("medium")
 ):
 
     try:
@@ -134,44 +80,33 @@ async def ask(
 
         logging.info(f"USER: {text}")
 
-        # ================= LANGUAGE =================
-        lang = lang.lower().strip() if lang else current_language
+        # ================= AUTO LENGTH DETECTION =================
+        detailed_keywords = [
+            "بالتفصيل", "اشرح", "شرح", "تفصيل", "explain", "details", "in detail"
+        ]
 
-        if lang not in LANGUAGE_NAMES:
-            lang = "ar"
-
-        logging.info(f"LANG: {lang}")
-
-        # ================= LANGUAGE INSTRUCTION =================
-        language_instruction = {
-            "ar": "يجب أن تكون كل الردود باللغة العربية فقط.",
-            "en": "All responses must be in English only.",
-            "de": "Alle Antworten müssen auf Deutsch sein.",
-            "zh": "所有回答必须使用中文。"
-        }.get(lang, "يجب أن تكون كل الردود باللغة العربية فقط.")
+        want_detailed = any(word in text for word in detailed_keywords)
 
         # ================= SYSTEM PROMPT =================
-        system_prompt = f"""
+        system_prompt = """
 أنت الملك رمسيس الثاني، ملك عظيم وحكيم من مصر القديمة.
 
-{language_instruction}
-
 مهم جداً:
-- لا تذكر أي قواعد أو تعليمات داخل الرد
-- لا تشرح اللغة أو النظام
-- استخدم أسلوب حكيم وملكي
+- أجب بنفس لغة المستخدم تلقائيًا
+- لا تذكر أي تعليمات أو قواعد
+- لا تذكر أنك ذكاء اصطناعي
 
 أسلوبك:
 - حكيم
 - هادئ
-- واثق
-- لا تذكر أنك ذكاء اصطناعي أبداً
+- ملكي
 """
 
-        if rtype == "short":
-            system_prompt += "\nاجعل الرد قصير."
+        # ================= RESPONSE STYLE =================
+        if want_detailed:
+            system_prompt += "\nاجعل الرد مفصل جدًا ويشرح كل النقاط."
         else:
-            system_prompt += "\nاجعل الرد مفصل."
+            system_prompt += "\nاجعل الرد متوسط الطول (ليس قصير جدًا ولا طويل)، واضح ومباشر."
 
         # ================= GPT =================
         gpt_response = client.responses.create(
@@ -186,7 +121,7 @@ async def ask(
                     "content": text
                 }
             ],
-            max_output_tokens=400
+            max_output_tokens=500
         )
 
         reply = ""
@@ -229,7 +164,6 @@ async def tts(
 ):
 
     try:
-        # ================= AUTH =================
         if request.headers.get("x-api-key") != API_SECRET:
             return JSONResponse(
                 status_code=403,
@@ -269,5 +203,5 @@ async def tts(
 async def health():
     return {
         "status": "running",
-        "mode": "voice_ai_multilingual_clean"
+        "mode": "ramesses_multilingual_auto"
     }
