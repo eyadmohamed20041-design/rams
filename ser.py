@@ -140,9 +140,7 @@ async def ask(
         # =====================================================
 
         if (
-            request.headers.get(
-                "x-api-key"
-            )
+            request.headers.get("x-api-key")
             != API_SECRET
         ):
             return JSONResponse(
@@ -162,18 +160,14 @@ async def ask(
         now = time.time()
 
         if (
-            now -
-            user_last_request.get(
-                ip,
-                0
-            )
+            now
+            - user_last_request.get(ip, 0)
             < MIN_INTERVAL
         ):
             return JSONResponse(
                 status_code=429,
                 content={
-                    "error":
-                        "Too many requests"
+                    "error": "Too many requests"
                 }
             )
 
@@ -184,17 +178,14 @@ async def ask(
         # INPUT
         # =====================================================
 
-        text = normalize(
-            text
-        )
+        text = normalize(text)
 
         if not text:
 
             return JSONResponse(
                 status_code=400,
                 content={
-                    "error":
-                        "Empty text"
+                    "error": "Empty text"
                 }
             )
 
@@ -203,11 +194,13 @@ async def ask(
         # LANGUAGE
         # =====================================================
 
-        # ================= LANGUAGE =================
         lang = detect_lang_fallback(lang)
+
         lang_instruction = get_lang_instruction(lang)
-        
-        logging.info(f"USER: {text} | LANG: {lang}")
+
+        logging.info(
+            f"USER: {text} | LANG: {lang}"
+        )
 
 
         # =====================================================
@@ -369,14 +362,12 @@ async def ask(
 
                 {
                     "role": "system",
-                    "content":
-                        system_prompt
+                    "content": system_prompt
                 },
 
                 {
                     "role": "user",
-                    "content":
-                        text
+                    "content": text
                 }
 
             ],
@@ -405,22 +396,18 @@ async def ask(
 
                 if (
                     content.type
-                    ==
-                    "output_text"
+                    == "output_text"
                 ):
 
-                    reply += (
-                        content.text
-                    )
+                    reply += content.text
 
 
-        reply =
-            reply.strip()
+        reply = reply.strip()
 
 
         if not reply:
-            reply =
-                "لم أفهم السؤال."
+
+            reply = "لم أفهم السؤال."
 
 
         logging.info(
@@ -432,18 +419,14 @@ async def ask(
         # TTS
         # =====================================================
 
-        speech =
-            client.audio.speech.create(
+        speech = client.audio.speech.create(
 
-                model=
-                    "gpt-4o-mini-tts",
+            model="gpt-4o-mini-tts",
 
-                voice=
-                    "alloy",
+            voice="alloy",
 
-                input=
-                    reply
-            )
+            input=reply
+        )
 
 
         # =====================================================
@@ -452,11 +435,9 @@ async def ask(
 
         return Response(
 
-            content=
-                speech.read(),
+            content=speech.read(),
 
-            media_type=
-                "audio/mpeg"
+            media_type="audio/mpeg"
         )
 
 
@@ -472,8 +453,7 @@ async def ask(
             status_code=500,
 
             content={
-                "error":
-                    str(e)
+                "error": str(e)
             }
         )
 
@@ -496,9 +476,7 @@ async def tts(
         # =====================================================
 
         if (
-            request.headers.get(
-                "x-api-key"
-            )
+            request.headers.get("x-api-key")
             != API_SECRET
         ):
             return JSONResponse(
@@ -506,8 +484,7 @@ async def tts(
                 status_code=403,
 
                 content={
-                    "error":
-                        "Forbidden"
+                    "error": "Forbidden"
                 }
             )
 
@@ -516,8 +493,7 @@ async def tts(
         # INPUT
         # =====================================================
 
-        text =
-            text.strip()
+        text = text.strip()
 
         if not text:
 
@@ -526,8 +502,7 @@ async def tts(
                 status_code=400,
 
                 content={
-                    "error":
-                        "Empty text"
+                    "error": "Empty text"
                 }
             )
 
@@ -536,37 +511,28 @@ async def tts(
         # LANGUAGE
         # =====================================================
 
-        lang =
-            detect_lang_fallback(
-                lang
-            )
+        lang = detect_lang_fallback(lang)
 
 
         # =====================================================
         # TTS
         # =====================================================
 
-        speech =
-            client.audio.speech.create(
+        speech = client.audio.speech.create(
 
-                model=
-                    "gpt-4o-mini-tts",
+            model="gpt-4o-mini-tts",
 
-                voice=
-                    "alloy",
+            voice="alloy",
 
-                input=
-                    text
-            )
+            input=text
+        )
 
 
         return Response(
 
-            content=
-                speech.read(),
+            content=speech.read(),
 
-            media_type=
-                "audio/mpeg"
+            media_type="audio/mpeg"
         )
 
 
@@ -582,8 +548,7 @@ async def tts(
             status_code=500,
 
             content={
-                "error":
-                    str(e)
+                "error": str(e)
             }
         )
 
@@ -597,10 +562,8 @@ async def health():
 
     return {
 
-        "status":
-            "running",
+        "status": "running",
 
-        "mode":
-            "ramesses_multilingual_interruptible"
+        "mode": "ramesses_multilingual_interruptible"
 
     }
