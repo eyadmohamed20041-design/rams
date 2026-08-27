@@ -203,20 +203,11 @@ async def ask(
         # LANGUAGE
         # =====================================================
 
-        lang =
-            detect_lang_fallback(
-                lang
-            )
-
-        lang_instruction =
-            get_lang_instruction(
-                lang
-            )
-
-
-        logging.info(
-            f"USER: {text} | LANG: {lang}"
-        )
+        # ================= LANGUAGE =================
+        lang = detect_lang_fallback(lang)
+        lang_instruction = get_lang_instruction(lang)
+        
+        logging.info(f"USER: {text} | LANG: {lang}")
 
 
         # =====================================================
