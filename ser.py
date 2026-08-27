@@ -132,8 +132,9 @@ def build_system_prompt(
     detailed: bool
 ):
 
-    lang_instruction = \
-        get_lang_instruction(lang)
+    lang_instruction = get_lang_instruction(
+        lang
+    )
 
     prompt = f"""
 
@@ -267,11 +268,10 @@ def generate_stream(
     detailed: bool
 ) -> Generator[str, None, None]:
 
-    system_prompt = \
-        build_system_prompt(
-            lang,
-            detailed
-        )
+    system_prompt = build_system_prompt(
+        lang,
+        detailed
+    )
 
     logging.info(
         f"STREAM USER: {text} | LANG: {lang}"
@@ -307,12 +307,11 @@ def generate_stream(
         try:
 
             if (
-                event.type ==
-                "response.output_text.delta"
+                event.type
+                == "response.output_text.delta"
             ):
 
-                delta = \
-                    event.delta
+                delta = event.delta
 
                 if not delta:
                     continue
@@ -321,10 +320,9 @@ def generate_stream(
 
                 while True:
 
-                    sentence, rest = \
-                        split_sentences(
-                            buffer
-                        )
+                    sentence, rest = split_sentences(
+                        buffer
+                    )
 
                     if not sentence:
                         break
@@ -397,15 +395,14 @@ async def ask_stream(
 
         now = time.time()
 
-        last =
-            user_last_request.get(
-                ip,
-                0
-            )
+        last = user_last_request.get(
+            ip,
+            0
+        )
 
         if (
-            now - last <
-            MIN_INTERVAL
+            now - last
+            < MIN_INTERVAL
         ):
 
             return JSONResponse(
@@ -421,8 +418,9 @@ async def ask_stream(
         # INPUT
         # =====================================================
 
-        text =
-            normalize(text)
+        text = normalize(
+            text
+        )
 
         if not text:
 
@@ -437,8 +435,9 @@ async def ask_stream(
         # LANGUAGE
         # =====================================================
 
-        lang =
-            detect_lang_fallback(lang)
+        lang = detect_lang_fallback(
+            lang
+        )
 
         # =====================================================
         # DETAIL DETECTION
@@ -456,17 +455,15 @@ async def ask_stream(
             "in detail",
 
             "erkläre",
-            "details",
 
             "详细",
             "解释"
         ]
 
-        detailed =
-            any(
-                word in text
-                for word in detailed_keywords
-            )
+        detailed = any(
+            word in text
+            for word in detailed_keywords
+        )
 
         # =====================================================
         # STREAM
@@ -480,8 +477,7 @@ async def ask_stream(
                 detailed
             ),
 
-            media_type=
-            "application/x-ndjson",
+            media_type="application/x-ndjson",
 
             headers={
                 "Cache-Control": "no-cache",
@@ -517,6 +513,10 @@ async def ask(
 
     try:
 
+        # =====================================================
+        # AUTH
+        # =====================================================
+
         if (
             request.headers.get("x-api-key")
             != API_SECRET
@@ -529,8 +529,13 @@ async def ask(
                 }
             )
 
-        text =
-            normalize(text)
+        # =====================================================
+        # INPUT
+        # =====================================================
+
+        text = normalize(
+            text
+        )
 
         if not text:
 
@@ -541,8 +546,17 @@ async def ask(
                 }
             )
 
-        lang =
-            detect_lang_fallback(lang)
+        # =====================================================
+        # LANGUAGE
+        # =====================================================
+
+        lang = detect_lang_fallback(
+            lang
+        )
+
+        # =====================================================
+        # DETAIL DETECTION
+        # =====================================================
 
         detailed_keywords = [
 
@@ -561,58 +575,71 @@ async def ask(
             "解释"
         ]
 
-        detailed =
-            any(
-                word in text
-                for word in detailed_keywords
-            )
+        detailed = any(
+            word in text
+            for word in detailed_keywords
+        )
 
-        system_prompt =
-            build_system_prompt(
-                lang,
-                detailed
-            )
+        # =====================================================
+        # SYSTEM PROMPT
+        # =====================================================
 
-        response =
-            client.responses.create(
+        system_prompt = build_system_prompt(
+            lang,
+            detailed
+        )
 
-                model="gpt-4o-mini",
+        # =====================================================
+        # OPENAI
+        # =====================================================
 
-                input=[
+        response = client.responses.create(
 
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
+            model="gpt-4o-mini",
 
-                    {
-                        "role": "user",
-                        "content": text
-                    }
-                ],
+            input=[
 
-                max_output_tokens=350
-            )
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
 
-        reply =
-            response.output_text.strip()
+                {
+                    "role": "user",
+                    "content": text
+                }
+
+            ],
+
+            max_output_tokens=350
+        )
+
+        # =====================================================
+        # RESPONSE TEXT
+        # =====================================================
+
+        reply = response.output_text.strip()
 
         if not reply:
+
             reply = "لم أفهم سؤالك."
 
         logging.info(
             f"RAMSES: {reply}"
         )
 
-        speech =
-            client.audio.speech.create(
+        # =====================================================
+        # TTS
+        # =====================================================
 
-                model="gpt-4o-mini-tts",
+        speech = client.audio.speech.create(
 
-                voice="alloy",
+            model="gpt-4o-mini-tts",
 
-                input=reply
-            )
+            voice="alloy",
+
+            input=reply
+        )
 
         return Response(
             content=speech.read(),
@@ -647,6 +674,10 @@ async def tts(
 
     try:
 
+        # =====================================================
+        # AUTH
+        # =====================================================
+
         if (
             request.headers.get("x-api-key")
             != API_SECRET
@@ -659,8 +690,11 @@ async def tts(
                 }
             )
 
-        text =
-            text.strip()
+        # =====================================================
+        # INPUT
+        # =====================================================
+
+        text = text.strip()
 
         if not text:
 
@@ -671,18 +705,26 @@ async def tts(
                 }
             )
 
-        lang =
-            detect_lang_fallback(lang)
+        # =====================================================
+        # LANGUAGE
+        # =====================================================
 
-        speech =
-            client.audio.speech.create(
+        lang = detect_lang_fallback(
+            lang
+        )
 
-                model="gpt-4o-mini-tts",
+        # =====================================================
+        # TTS
+        # =====================================================
 
-                voice="alloy",
+        speech = client.audio.speech.create(
 
-                input=text
-            )
+            model="gpt-4o-mini-tts",
+
+            voice="alloy",
+
+            input=text
+        )
 
         return Response(
             content=speech.read(),
@@ -713,6 +755,5 @@ async def health():
 
     return {
         "status": "running",
-        "mode":
-            "ramesses_streaming_multilingual_interruptible"
+        "mode": "ramesses_streaming_multilingual_interruptible"
     }
